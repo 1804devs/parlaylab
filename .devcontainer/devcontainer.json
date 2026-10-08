@@ -1,0 +1,33 @@
+{
+  "name": "ParlayLab",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "hostRequirements": { "cpus": 2 },
+
+  // Install once when the codespace is created.
+  "postCreateCommand": "pip install --user -r requirements.txt",
+
+  // Start the app every time you open the codespace.
+  // XSRF/CORS are off because Codespaces' private port proxy breaks file uploads otherwise;
+  // the port stays private to your GitHub account.
+  "postAttachCommand": "streamlit run app.py --server.headless true --server.enableCORS false --server.enableXsrfProtection false",
+
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": { "label": "ParlayLab", "onAutoForward": "openBrowser" }
+  },
+
+  // Codespaces asks for these when you create the codespace and keeps them out of the code.
+  "secrets": {
+    "NEBIUS_API_KEY": {
+      "description": "API key from the Nebius Token Factory dashboard (required)."
+    },
+    "TAVILY_API_KEY": {
+      "description": "Optional: lets the Scout agent search live injury news (tavily.com)."
+    }
+  },
+
+  "customizations": {
+    "codespaces": { "openFiles": ["README.md"] },
+    "vscode": { "extensions": ["ms-python.python"] }
+  }
+}
