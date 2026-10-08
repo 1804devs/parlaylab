@@ -39,8 +39,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from . import db, learned
-from .nebius_client import chat, extract_json, model_name
+from . import db, learned, rnd_report
+from .nebius_client import chat, extract_json, model_name, usage_reset, usage_snapshot
 
 PROJECT = Path(__file__).resolve().parent.parent
 BACKUPS = PROJECT / ".rnd_backups"
@@ -523,23 +523,54 @@ def build_proposal(item: dict, api_key=None, progress: ProgressFn = lambda m: No
 
 def run_rnd_cycle(api_key: str | None = None, goal: str = "", max_items: int = 3,
                   progress: ProgressFn = lambda m: None) -> dict:
+    """Run the team, then always write a report, even if the cycle fails."""
+    usage_reset()
+    prev = db.latest_rnd_report()
     events = db.list_events(only_new=True)
-    signals = collect_signals(events)
-    progress(f"Collected {signal_count(signals)} new signals from the app")
+    counts = dict(Counter(e["kind"] for e in events))
+    issues, ideas, plan, ids, error = [], [], [], [], None
+    try:
+        signals = collect_signals(events)
+        progress(f"Collected {signal_count(signals)} new signals from the app")
 
-    progress("QA Analyst and Product Researcher are studying the app")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_qa = pool.submit(qa_analyst, signals, api_key)
-        f_pr = pool.submit(product_researcher, signals, goal, api_key)
-        issues, ideas = f_qa.result(), f_pr.result()
+        progress("QA Analyst and Product Researcher are studying the app")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_qa = pool.submit(qa_analyst, signals, api_key)
+            f_pr = pool.submit(product_researcher, signals, goal, api_key)
+            issues, ideas = f_qa.result(), f_pr.result()
 
-    progress(f"R&D Lead is planning ({len(issues)} issues, {len(ideas)} ideas)")
-    plan = rnd_lead(issues, ideas, goal, max_items, api_key)
-    if not plan:
-        return {"issues": issues, "ideas": ideas, "plan": [], "proposals": []}
+        progress(f"R&D Lead is planning ({len(issues)} issues, {len(ideas)} ideas)")
+        plan = rnd_lead(issues, ideas, goal, max_items, api_key)
+        if plan:
+            with ThreadPoolExecutor(max_workers=min(3, len(plan))) as pool:
+                ids = list(pool.map(lambda it: build_proposal(it, api_key, progress), plan))
+            db.mark_events_used([e["id"] for e in events])
+    except Exception as e:  # report it honestly instead of losing it
+        error = str(e)
 
-    with ThreadPoolExecutor(max_workers=min(3, len(plan))) as pool:
-        ids = list(pool.map(lambda it: build_proposal(it, api_key, progress), plan))
+    progress("Writing the report")
+    report_id = write_report("cycle", goal=goal, signal_counts=counts, prev=prev, issues=issues, ideas=ideas,
+                             cycle_ids=ids, error=error)
+    if error:
+        raise RuntimeError(f"{error} (a report about what happened was saved)")
+    return {"issues": issues, "ideas": ideas, "plan": plan, "proposals": ids, "report": report_id}
 
-    db.mark_events_used([e["id"] for e in events])
-    return {"issues": issues, "ideas": ideas, "plan": plan, "proposals": ids}
+
+def write_report(kind: str, *, goal: str = "", signal_counts: dict | None = None, prev: dict | None = None,
+                 issues=None, ideas=None, cycle_ids=None, error: str | None = None) -> int:
+    """Build and save a report. kind="status" is free: no model calls."""
+    # Stamp the time BEFORE reading the facts, so a change made while the report is being
+    # written shows up in the next report instead of being skipped.
+    created_at = datetime.now().isoformat(timespec="microseconds")
+    if prev is None:
+        prev = db.latest_rnd_report()
+    all_props = db.list_proposals()
+    cycle = [p for p in all_props if p["id"] in set(cycle_ids or [])]
+    cycle.sort(key=lambda p: p["id"])
+    markdown, data = rnd_report.build_report(
+        kind=kind, created_at=created_at, goal=goal,
+        signal_counts=signal_counts if signal_counts is not None else db.event_counts(only_new=True),
+        prev_report=prev, issues=issues, ideas=ideas, cycle_proposals=cycle, all_proposals=all_props,
+        usage=usage_snapshot() if kind == "cycle" else {}, error=error,
+    )
+    return db.add_rnd_report(kind, markdown, data, created_at=created_at)

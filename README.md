@@ -35,6 +35,14 @@ Press **Run R&D cycle** (optionally with a goal like "add NBA double-doubles") a
 
 Each proposal shows up with a plain-English summary, the code diff, the test result and the Reviewer's risk rating. **Nothing changes until you press Approve.** Approving backs up the files, applies the change, re-runs the tests on the real app, and rolls back automatically if anything fails. Every applied change has an **Undo** button.
 
+**Reports:** after every cycle the team writes a report in the R&D Lab (also downloadable as Markdown). It's built to be honest:
+- every number and status (signals, test results, what was applied, rejected or undone, estimated cost) is counted by code from the app's records, never written by a model;
+- anything a model wrote is labelled "model's view";
+- every report has a **Not proven yet** section, because passing tests doesn't prove a change fixed the real problem;
+- failures and errors are reported, and a cycle that crashes still leaves a report saying what happened.
+
+**Write a status report (free)** summarises what changed since the last report without using any credits. The agents can't edit the report code (`parlaylab/rnd_report.py`).
+
 **Guardrails:**
 - The agents can only edit `app.py` and the tracker, slip-reader, research, odds and stats modules.
 - They can't edit the R&D code, the model client, the database, the rules loader or the existing test suite, so they can't weaken the tests that judge their work.
@@ -86,6 +94,7 @@ parlaylab/
   stats_catalog.py         supported prop stats per sport
   agents.py                the five-agent research team
   rnd.py                   the R&D team: agents, sandbox tests, apply/undo
+  rnd_report.py            the R&D team's honest report (facts from records, not models)
   learned.py               rules the R&D team teaches the app (learned.json)
   odds.py                  American odds, payout, implied probability
   db.py                    SQLite storage

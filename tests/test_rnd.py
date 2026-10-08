@@ -213,3 +213,6 @@ def test_full_cycle_with_scripted_agents(tmp_db, tmp_rules, monkeypatch):
     assert prop["data"]["tests"]["passed"]
     assert prop["data"]["review"]["recommend"] == "approve"
     assert db.event_counts(only_new=True) == {}
+    report = db.latest_rnd_report()
+    assert report["id"] == out["report"]
+    assert "1 proposal: 1 ready for your review, 0 didn't pass" in report["markdown"]

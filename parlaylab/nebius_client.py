@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from typing import Any
 
@@ -175,9 +176,57 @@ def model_report(api_key: str | None = None) -> dict:
 NO_THINK = {"chat_template_kwargs": {"enable_thinking": False}}
 MAX_OUTPUT = 16000
 
+# ---------------- usage + cost tracking ----------------
+# Approximate Nebius prices, $ per 1M tokens (input, output). Used only for
+# ESTIMATES in reports; your Nebius billing page is the real number.
+PRICES = {
+    "nemotron-3-nano-30b": (0.06, 0.24),
+    "nemotron-3-nano-omni": (0.06, 0.24),
+    "nemotron-3-super": (0.30, 0.90),
+    "nemotron-3-ultra": (1.00, 3.00),
+    "cosmos3-super-reasoner": (0.10, 0.30),
+    "gemma-3-27b": (0.10, 0.30),
+    "qwen2.5-vl-72b": (0.25, 0.75),
+}
+_USAGE: dict[str, dict] = {}
+_USAGE_LOCK = threading.Lock()
+
+
+def _record_usage(model: str, resp) -> None:
+    u = getattr(resp, "usage", None)
+    if not u:
+        return
+    with _USAGE_LOCK:
+        row = _USAGE.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0})
+        row["calls"] += 1
+        row["input_tokens"] += getattr(u, "prompt_tokens", 0) or 0
+        row["output_tokens"] += getattr(u, "completion_tokens", 0) or 0
+
+
+def usage_reset() -> None:
+    with _USAGE_LOCK:
+        _USAGE.clear()
+
+
+def usage_snapshot() -> dict[str, dict]:
+    """{model: {calls, input_tokens, output_tokens, est_cost (None if price unknown)}}."""
+    with _USAGE_LOCK:
+        out = {m: dict(v) for m, v in _USAGE.items()}
+    for m, v in out.items():
+        price = next((p for k, p in PRICES.items() if k in m.lower()), None)
+        v["est_cost"] = (None if price is None else
+                         round(v["input_tokens"] / 1e6 * price[0] + v["output_tokens"] / 1e6 * price[1], 4))
+    return out
+
 
 def _create(client, model: str, messages, max_tokens: int, temperature: float, think: bool):
-    """One API call. `think=False` asks Nemotron to skip its reasoning step."""
+    """One API call (usage recorded). `think=False` asks Nemotron to skip its reasoning step."""
+    resp = _create_raw(client, model, messages, max_tokens, temperature, think)
+    _record_usage(model, resp)
+    return resp
+
+
+def _create_raw(client, model: str, messages, max_tokens: int, temperature: float, think: bool):
     kwargs = dict(model=model, messages=messages, max_tokens=max_tokens, temperature=temperature)
     no_think = not think and "nemotron" in model.lower()
     try:

@@ -358,10 +358,11 @@ with tab_rnd:
                     out = rnd.run_rnd_cycle(api_key, goal.strip(), n_items, progress=lambda msg: box.write(msg))
                     st.session_state.rnd_last = out
                     n = len(out["proposals"])
-                    box.update(label=f"Cycle done: {n} proposal{'s' if n != 1 else ''}", state="complete")
+                    box.update(label=f"Cycle done: {n} proposal{'s' if n != 1 else ''}. "
+                                     "The report is below.", state="complete")
                 except Exception as e:
                     db.log_event("error", {"where": "rnd_cycle", "message": str(e)})
-                    box.update(label="R&D cycle failed", state="error")
+                    box.update(label="R&D cycle failed. The report below says what happened.", state="error")
                     st.error(str(e))
 
     last = st.session_state.get("rnd_last")
@@ -374,6 +375,33 @@ with tab_rnd:
                 st.markdown("**Product Researcher: ideas**")
                 st.dataframe(pd.DataFrame(last["ideas"]), hide_index=True, width="stretch")
 
+    # ---- reports from the R&D team ----
+    st.markdown("#### 📄 Reports")
+    reports = db.list_rnd_reports()
+    r1, r2 = st.columns([2, 1])
+    r1.caption("A report is written after every R&D cycle. Its numbers and statuses come from the app's own "
+               "records, not from the AI. AI opinions are labelled, and there's always a 'Not proven yet' section.")
+    if r2.button("Write a status report (free)", width="stretch",
+                 help="Summarises what changed since the last report. Uses no credits."):
+        rnd.write_report("status")
+        st.rerun()
+    if not reports:
+        st.info("No reports yet. Run an R&D cycle, or write a free status report.")
+    else:
+        latest = reports[0]
+        with st.container(border=True):
+            st.markdown(latest["markdown"])
+            st.download_button("Download this report", latest["markdown"],
+                               file_name=f"parlaylab-rnd-report-{latest['id']}.md", mime="text/markdown",
+                               key=f"dl{latest['id']}")
+        if len(reports) > 1:
+            with st.expander(f"Earlier reports ({len(reports) - 1})"):
+                for rep in reports[1:]:
+                    st.markdown(f"**#{rep['id']} · {rep['kind']} · {rep['created_at']}**")
+                    st.download_button("Download", rep["markdown"], file_name=f"parlaylab-rnd-report-{rep['id']}.md",
+                                       mime="text/markdown", key=f"dl{rep['id']}")
+
+    st.markdown("#### Proposals")
     proposals = db.list_proposals()
     if not proposals:
         st.info("No proposals yet. Use the app (add slips, track games, rate reports, send feedback), "

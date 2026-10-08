@@ -45,6 +45,16 @@ def _conn() -> sqlite3.Connection:
             status TEXT
         )"""
     )
+    # Reports the R&D team sends you after each cycle.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS rnd_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            kind TEXT,
+            markdown TEXT,
+            data TEXT
+        )"""
+    )
     return conn
 
 
@@ -84,11 +94,16 @@ def event_counts(only_new: bool = True) -> dict:
 
 # ---------- proposals ----------
 
+def _now() -> str:
+    return datetime.now().isoformat(timespec="microseconds")
+
+
 def add_proposal(title: str, data: dict, status: str) -> int:
+    data = {**data, "history": [{"status": status, "at": _now()}]}
     with _conn() as conn:
         cur = conn.execute(
             "INSERT INTO proposals (created_at, title, data, status) VALUES (?, ?, ?, ?)",
-            (datetime.now().isoformat(timespec="seconds"), title, json.dumps(data, default=str), status),
+            (_now(), title, json.dumps(data, default=str), status),
         )
         return cur.lastrowid
 
@@ -106,12 +121,39 @@ def get_proposal(pid: int) -> dict | None:
 
 
 def update_proposal(pid: int, status: str, data: dict | None = None) -> None:
+    """Change a proposal's status. Every change is kept in data['history'] for the reports."""
+    current = get_proposal(pid)
+    if current is None:
+        return
+    data = dict(data if data is not None else current["data"])
+    history = list(current["data"].get("history") or [])
+    history.append({"status": status, "at": _now()})
+    data["history"] = history
     with _conn() as conn:
-        if data is None:
-            conn.execute("UPDATE proposals SET status = ? WHERE id = ?", (status, pid))
-        else:
-            conn.execute("UPDATE proposals SET status = ?, data = ? WHERE id = ?",
-                         (status, json.dumps(data, default=str), pid))
+        conn.execute("UPDATE proposals SET status = ?, data = ? WHERE id = ?",
+                     (status, json.dumps(data, default=str), pid))
+
+
+# ---------- R&D reports ----------
+
+def add_rnd_report(kind: str, markdown: str, data: dict, created_at: str | None = None) -> int:
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO rnd_reports (created_at, kind, markdown, data) VALUES (?, ?, ?, ?)",
+            (created_at or _now(), kind, markdown, json.dumps(data, default=str)),
+        )
+        return cur.lastrowid
+
+
+def list_rnd_reports() -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM rnd_reports ORDER BY id DESC").fetchall()
+    return [{**dict(r), "data": json.loads(r["data"] or "{}")} for r in rows]
+
+
+def latest_rnd_report() -> dict | None:
+    reports = list_rnd_reports()
+    return reports[0] if reports else None
 
 
 def add_parlay(legs: list[dict], stake: float | None, book: str | None, total_odds: float | None) -> int:
