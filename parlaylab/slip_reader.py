@@ -152,6 +152,55 @@ def read_slip_text(slip_text: str, api_key: str | None = None, book: str | None 
     return _with_book(result, book)
 
 
+MULTI_SLIP_RULES = """
+The text may contain SEVERAL separate bets, for example a copied "My Bets" page.
+Return ONLY a JSON object {"slips": [ ... ]} with one entry per separate bet, each entry shaped exactly
+like the slip object described above, plus "status": "open", "won", "lost", "void", "cashed_out" or null
+(as shown on the page). A parlay is ONE slip with several legs; a straight bet is a slip with one leg.
+Ignore menus, promos, balances and anything that isn't a bet."""
+
+CHUNK_CHARS = 6000
+
+
+def _chunks(text: str, size: int = CHUNK_CHARS) -> list[str]:
+    """Split long pasted pages on blank lines so no single model call is too big."""
+    parts, cur = [], ""
+    for block in re.split(r"\n\s*\n", text):
+        if cur and len(cur) + len(block) > size:
+            parts.append(cur)
+            cur = ""
+        cur = (cur + "\n\n" + block).strip()
+    if cur:
+        parts.append(cur)
+    return parts or [text]
+
+
+def read_slips_text(text: str, api_key: str | None = None, book: str | None = None) -> list[dict]:
+    """Pasted text that may hold many bets (e.g. a whole My Bets page) → a list of slips.
+
+    One cheap Nemotron call per ~6,000 characters, thinking off."""
+    parser = pick_model("agent", api_key)
+    slips: list[dict] = []
+    for chunk in _chunks(text):
+        messages = [
+            {"role": "system", "content": _instructions() + MULTI_SLIP_RULES},
+            {"role": "user", "content": f"Bets text:{_book_hint(book)}\n\n{chunk}"},
+        ]
+        data = extract_json(chat(messages, model="agent", api_key=api_key, temperature=0.0,
+                                 max_tokens=12000, think=False))
+        raw = data.get("slips") if isinstance(data, dict) and "slips" in data else (
+            data if isinstance(data, list) else [data])
+        for s in raw or []:
+            if not isinstance(s, dict):
+                continue
+            slip = _with_book(_normalize(s), book)
+            slip["status"] = (s.get("status") or None)
+            slip["_models"] = {"vision": None, "parser": parser}
+            if slip["legs"]:
+                slips.append(slip)
+    return slips
+
+
 def _with_book(result: dict, book: str | None) -> dict:
     if book and not result.get("book"):
         result["book"] = book
@@ -290,8 +339,9 @@ def hardrock_betslip_ids(url: str) -> list[str] | None:
 
 
 def read_shared(shared: str, api_key: str | None = None, book: str | None = "Hard Rock Bet",
-                fetch=fetch_share_page, fetch_image=fetch_google_image) -> dict:
-    """Whatever the Share button gave you: text, a sportsbook link, or a Google Photos/Drive link."""
+                fetch=fetch_share_page, fetch_image=fetch_google_image) -> list[dict]:
+    """Whatever you pasted: slip text (one bet or a whole My Bets page), a sportsbook link,
+    or a Google Photos/Drive link. Returns a list of slips."""
     shared = (shared or "").strip()
     urls = _URL.findall(shared)
     text_part = _URL.sub(" ", shared).strip()
@@ -302,7 +352,7 @@ def read_shared(shared: str, api_key: str | None = None, book: str | None = "Har
         image, mime = fetch_image(google[0])
         result = read_slip_image(image, mime, api_key, book=book)
         result["_shared_from"] = "google"
-        return result
+        return [result]
 
     # 2) A Hard Rock "share betslip" link only carries Hard Rock's internal bet IDs
     #    (hardrock://betslip/<id>,<id>,...), and the page redirects to the app's home page.
@@ -342,6 +392,10 @@ def read_shared(shared: str, api_key: str | None = None, book: str | None = "Har
                              "Upload a screenshot instead.")
         raise ShareError("That doesn't look like a bet slip: no odds or lines found. Paste the full slip text, "
                          "or upload a screenshot.")
-    result = read_slip_text(combined[:8000], api_key, book=book)
-    result["_shared_from"] = "link" if page_text else "text"
-    return result
+    slips = read_slips_text(combined[:60000], api_key, book=book)
+    if not slips:
+        raise ShareError("No bets were found in that text. Check you copied the bets themselves, "
+                         "or upload a screenshot.")
+    for s in slips:
+        s["_shared_from"] = "link" if page_text else "text"
+    return slips

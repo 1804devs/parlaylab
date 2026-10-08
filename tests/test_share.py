@@ -23,21 +23,21 @@ def test_one_long_slip_in_parts_keeps_each_leg_once():
 def _fake_text_reader(calls):
     def fake(text, api_key=None, book=None):
         calls.append({"text": text, "book": book})
-        return {"book": book, "stake": None, "total_odds": None, "potential_payout": None, "legs": [LEG_A]}
+        return [{"book": book, "stake": None, "total_odds": None, "potential_payout": None, "legs": [LEG_A]}]
     return fake
 
 
 def test_shared_text_is_read_with_hard_rock_hint(monkeypatch):
     calls = []
-    monkeypatch.setattr(slip_reader, "read_slip_text", _fake_text_reader(calls))
+    monkeypatch.setattr(slip_reader, "read_slips_text", _fake_text_reader(calls))
     out = read_shared("My Hard Rock parlay: Giants +3.5 (-110), Nabers o64.5 rec yds (-115)", "key")
     assert calls[0]["book"] == "Hard Rock Bet" and "Giants +3.5" in calls[0]["text"]
-    assert out["_shared_from"] == "text"
+    assert out[0]["_shared_from"] == "text"
 
 
 def test_hard_rock_link_is_opened_when_it_shows_the_bets(monkeypatch):
     calls, fetched = [], []
-    monkeypatch.setattr(slip_reader, "read_slip_text", _fake_text_reader(calls))
+    monkeypatch.setattr(slip_reader, "read_slips_text", _fake_text_reader(calls))
 
     def fake_fetch(url):
         fetched.append(url)
@@ -45,18 +45,18 @@ def test_hard_rock_link_is_opened_when_it_shows_the_bets(monkeypatch):
 
     out = read_shared("Check out my bet! https://share.hardrock.bet/b/abc123", "key", fetch=fake_fetch)
     assert fetched == ["https://share.hardrock.bet/b/abc123"]
-    assert "Malik Nabers Over 64.5" in calls[0]["text"] and out["_shared_from"] == "link"
+    assert "Malik Nabers Over 64.5" in calls[0]["text"] and out[0]["_shared_from"] == "link"
 
 
 def test_link_that_needs_sign_in_gives_a_clear_message(monkeypatch):
-    monkeypatch.setattr(slip_reader, "read_slip_text", _fake_text_reader([]))
+    monkeypatch.setattr(slip_reader, "read_slips_text", _fake_text_reader([]))
     with pytest.raises(ShareError, match="opened, but the page didn't show the bets"):
         read_shared("https://share.hardrock.bet/b/abc123", "key", fetch=lambda url: "Log in to Hard Rock Bet")
 
 
 def test_other_sites_are_never_fetched(monkeypatch):
     fetched = []
-    monkeypatch.setattr(slip_reader, "read_slip_text", _fake_text_reader([]))
+    monkeypatch.setattr(slip_reader, "read_slips_text", _fake_text_reader([]))
     with pytest.raises(ShareError, match="169.254.169.254, which the app doesn't open"):
         read_shared("http://169.254.169.254/latest https://evil.example/hardrock.bet", "key",
                     fetch=lambda url: fetched.append(url) or "Giants +3.5 -110")
@@ -65,7 +65,7 @@ def test_other_sites_are_never_fetched(monkeypatch):
 
 def test_text_without_odds_is_not_sent_to_the_model(monkeypatch):
     calls = []
-    monkeypatch.setattr(slip_reader, "read_slip_text", _fake_text_reader(calls))
+    monkeypatch.setattr(slip_reader, "read_slips_text", _fake_text_reader(calls))
     with pytest.raises(ShareError, match="doesn't look like a bet slip"):
         read_shared("hey look at this", "key")
     assert calls == []
@@ -151,7 +151,7 @@ def test_read_shared_routes_google_links_to_the_screenshot_reader(monkeypatch):
     monkeypatch.setattr(slip_reader, "read_slip_image", fake_image_reader)
     out = read_shared("https://photos.app.goo.gl/AbCdEf123", "key",
                       fetch_image=lambda url: (b"png", "image/png"))
-    assert calls == [(b"png", "image/png", "Hard Rock Bet")] and out["_shared_from"] == "google"
+    assert calls == [(b"png", "image/png", "Hard Rock Bet")] and out[0]["_shared_from"] == "google"
 
 
 def test_hard_rock_betslip_link_is_explained_not_fetched(monkeypatch):
@@ -163,3 +163,60 @@ def test_hard_rock_betslip_link_is_explained_not_fetched(monkeypatch):
         read_shared(link, "key", fetch=lambda url: fetched.append(url) or "")
     assert fetched == []
     assert slip_reader.hardrock_betslip_ids("https://evil.example/betslip/1,2") is None
+
+
+# ---- paste a whole My Bets page (cheapest path) ----
+MY_BETS = """My Bets  Open  Settled
+6 Leg Parlay +2450  Wager $5.00  To Win $122.50
+New York Giants +3.5 -110
+Malik Nabers Over 64.5 Receiving Yards -115
+
+Straight  Wager $20.00
+Knicks ML -150
+
+2 Leg Parlay  WON  +264
+Yankees ML -120
+Aaron Judge Over 0.5 Hits -250"""
+
+
+def test_my_bets_page_becomes_separate_slips(monkeypatch):
+    monkeypatch.setattr(slip_reader, "pick_model", lambda role, api_key=None: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B")
+    seen = []
+
+    def fake_chat(messages, model, api_key=None, **kw):
+        seen.append((messages, kw))
+        return json.dumps({"slips": [
+            {"stake": 5, "total_odds": 2450, "status": "open", "legs": [LEG_A, LEG_B]},
+            {"stake": 20, "status": "open", "legs": [{"sport": "NBA", "type": "moneyline", "team": "New York Knicks",
+                                                      "odds": -150}]},
+            {"status": "won", "legs": [{"sport": "MLB", "type": "moneyline", "team": "New York Yankees", "odds": -120}]},
+            {"status": "open", "legs": []},          # empty → dropped
+        ]})
+
+    monkeypatch.setattr(slip_reader, "chat", fake_chat)
+    slips = slip_reader.read_slips_text(MY_BETS, "key", book="Hard Rock Bet")
+    assert [len(s["legs"]) for s in slips] == [2, 1, 1]
+    assert [s["status"] for s in slips] == ["open", "open", "won"]
+    assert all(s["book"] == "Hard Rock Bet" for s in slips)
+    assert len(seen) == 1                                     # one cheap call for the whole page
+    assert seen[0][1]["think"] is False
+    assert "SEVERAL separate bets" in seen[0][0][0]["content"]
+
+
+def test_single_slip_reply_is_accepted(monkeypatch):
+    monkeypatch.setattr(slip_reader, "pick_model", lambda role, api_key=None: "m")
+    monkeypatch.setattr(slip_reader, "chat", lambda *a, **k: json.dumps({"legs": [LEG_A]}))
+    assert len(slip_reader.read_slips_text("Giants +3.5 -110", "key")) == 1
+
+
+def test_long_pages_are_split_on_blank_lines():
+    page = "\n\n".join(f"Bet {i} Giants +3.5 -110 " + "x" * 900 for i in range(20))
+    chunks = slip_reader._chunks(page, size=6000)
+    assert len(chunks) > 1 and all(len(c) <= 6000 + 1000 for c in chunks)
+    assert "".join(chunks).count("Bet ") == 20               # nothing lost
+
+
+def test_paste_with_no_bets_found(monkeypatch):
+    monkeypatch.setattr(slip_reader, "read_slips_text", lambda *a, **k: [])
+    with pytest.raises(ShareError, match="No bets were found"):
+        read_shared("Giants +3.5 -110", "key")

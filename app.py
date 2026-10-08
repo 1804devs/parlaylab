@@ -206,18 +206,29 @@ with tab_add:
                                + ". Check the legs on the right.")
                     _show_models(results[0])
 
-        with st.expander("📲 Paste what the Share button gave you"):
-            st.caption("Paste a **Google Photos or Google Drive link** to a slip screenshot, the text of a slip, "
-                       "or a Hard Rock share link. Google links are downloaded and read like an uploaded "
-                       "screenshot; the picture must be shared with 'anyone with the link'.")
+        with st.expander("📋 Paste your bets (cheapest)", expanded=True):
+            st.caption("**Fastest + cheapest:** on app.hardrock.bet open **My Bets**, select all, copy, and paste "
+                       "here. Every slip on the page is read in one go (about a tenth of a cent for 10 slips). "
+                       "You can also paste one slip's text, or a **Google Photos / Drive link** to a screenshot.")
             shared = st.text_area("Shared slip", height=120, key="shared_text",
-                                  placeholder="https://photos.app.goo.gl/…  or the slip's text")
-            if st.button("Read shared slip", disabled=not shared.strip()):
+                                  placeholder="Paste your My Bets page, a slip's text, or a Google Photos link")
+            include_settled = st.checkbox("Also add bets that are already settled", value=False)
+            if st.button("Read pasted bets", disabled=not shared.strip()):
                 with st.spinner("Reading..."):
                     try:
-                        d = read_shared(shared, api_key, book=book_hint)
-                        _queue_drafts([_ai_draft(d, "share_" + d.get("_shared_from", "text"))])
-                        st.success(f"Found {len(d['legs'])} legs. Check them on the right.")
+                        slips = read_shared(shared, api_key, book=book_hint)
+                        settled = [s for s in slips if s.get("status") in ("won", "lost", "void", "cashed_out")]
+                        keep = slips if include_settled else [s for s in slips if s not in settled]
+                        _queue_drafts([_ai_draft(s, "share_" + s.get("_shared_from", "text")) for s in keep])
+                        legs = sum(len(s["legs"]) for s in keep)
+                        msg = (f"Found {len(slips)} slip(s). Added {len(keep)} to check ({legs} legs); "
+                               "check them one by one on the right.")
+                        if settled and not include_settled:
+                            msg += f" Left out {len(settled)} already-settled slip(s)."
+                        if keep:
+                            st.success(msg)
+                        else:
+                            st.info(msg + " Tick the box above to add settled bets too.")
                     except ShareError as e:
                         st.warning(str(e))
                     except Exception as e:
