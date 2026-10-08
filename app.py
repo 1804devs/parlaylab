@@ -47,8 +47,17 @@ st.markdown(
 # ---------------- sidebar ----------------
 with st.sidebar:
     st.subheader("Settings")
-    api_key = st.text_input("Nebius API key", value=os.getenv("NEBIUS_API_KEY", ""), type="password",
+    env_key = os.getenv("NEBIUS_API_KEY", "")
+    api_key = st.text_input("Nebius API key", value=env_key, type="password",
                             help="From the Nebius Token Factory dashboard. Stored only for this session.")
+    api_key = (api_key or "").strip()  # a stray space or line break makes Nebius reject the key
+    if api_key:
+        source = ("your Codespaces secret / .env file" if api_key == env_key.strip()
+                  else "the key pasted here")
+        st.caption(f"**Key source:** {source} (ends in …{api_key[-4:]}). If Nebius rejects it, paste a "
+                   "fresh key here.")
+    else:
+        st.caption("**Key source:** none yet. Paste your Nebius key above.")
     auto = st.toggle("Auto-refresh live scores", value=True)
     every = st.select_slider("Refresh every", options=[30, 60, 120, 300], value=60, format_func=lambda s: f"{s}s")
     st.divider()

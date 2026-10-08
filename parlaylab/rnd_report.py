@@ -15,8 +15,10 @@ The R&D agents cannot edit this file (it is not in rnd.EDITABLE).
 """
 from __future__ import annotations
 
+import os
 import re
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timezone
 
 SIGNAL_LABELS = {
     "slip_correction": "Slips you corrected after the reader ran",
@@ -34,6 +36,20 @@ REAL_WORLD_CHECK = {
     "ui": "Use the changed screen on a real parlay and decide if it's actually better.",
     "odds": "Compare the app's payout with your sportsbook's on a real slip.",
 }
+
+
+def fix_hint(error: str | None) -> str:
+    """A concrete next step for errors we recognise (plain text matching, no model)."""
+    e = (error or "").lower()
+    if "api key" in e:
+        return ("Check your Nebius API key. The sidebar shows which key the app is using (**Key source**). "
+                "Paste a fresh key from tokenfactory.nebius.com/project/api-keys into the sidebar, or fix your "
+                "Codespaces secret, then run the cycle again.")
+    if "credits" in e or "too fast" in e:
+        return "Check your Nebius credit balance, wait a minute, then run the cycle again."
+    if "doesn't offer" in e or "no nemotron" in e or "model" in e:
+        return "Open 🤖 Models in the sidebar, click Check my models, then run the cycle again."
+    return "Fix the error above, then run the cycle again. If it keeps happening, send the report to Claude."
 
 
 def parse_tests(tests: dict | None) -> tuple[int | None, int | None]:
@@ -63,11 +79,24 @@ def _cell(text, limit: int = 140) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _display_tz():
+    """Reports show times in PARLAYLAB_TZ (default New York), labelled, not the server's clock."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(os.getenv("PARLAYLAB_TZ", "America/New_York"))
+    except Exception:
+        return timezone.utc
+
+
 def _when(iso: str | None) -> str:
     try:
-        return datetime.fromisoformat(iso).strftime("%b %d, %I:%M %p").replace(" 0", " ")
+        dt = datetime.fromisoformat(iso)
     except (TypeError, ValueError):
         return str(iso or "")
+    if dt.tzinfo is None:          # stored in the machine's local time (UTC in a Codespace)
+        dt = dt.astimezone()
+    dt = dt.astimezone(_display_tz())
+    return dt.strftime("%b %d, %I:%M %p %Z").replace(" 0", " ")
 
 
 def _plural(n: int, word: str) -> str:
@@ -99,11 +128,14 @@ def build_report(
     all_proposals: list[dict] | None = None,
     usage: dict | None = None,
     error: str | None = None,
+    error_samples: list[dict] | None = None,     # [{"where", "message", "count"}] from the app's records
+    last_finished_cycle: dict | None = None,     # last cycle report that did NOT stop with an error
 ) -> tuple[str, dict]:
     signal_counts = signal_counts or {}
     cycle_proposals = cycle_proposals or []
     all_proposals = all_proposals or []
     issues, ideas, usage = issues or [], ideas or [], usage or {}
+    error_samples = error_samples or []
     since = prev_report["created_at"] if prev_report else None
     cycle_ids = {p["id"] for p in cycle_proposals}
     changes = changes_since(all_proposals, since, exclude_ids=cycle_ids)
@@ -121,7 +153,7 @@ def build_report(
 
     # ---- bottom line (facts only) ----
     if error:
-        bottom = (f"The R&D cycle stopped with an error before it finished: {_cell(error, 300)}. "
+        bottom = (f"The R&D cycle stopped with an error before it finished: {_cell(error, 300).rstrip('.')}. "
                   "Nothing in the app was changed.")
     elif kind == "cycle":
         if cycle_proposals:
@@ -145,13 +177,24 @@ def build_report(
         if goal:
             L += [f"**Your goal:** {_cell(goal, 400)}", ""]
         if total_signals:
-            L += ["| Signal from real use | New since last cycle |", "| --- | --- |"]
+            L += ["| Signal from real use | Waiting to be studied |", "| --- | --- |"]
             for k, label in SIGNAL_LABELS.items():
                 L.append(f"| {label} | {signal_counts.get(k, 0)} |")
-            prev_counts = (prev_report or {}).get("data", {}).get("signal_counts")
-            if prev_counts:
-                L += ["", f"Last cycle had {sum(prev_counts.values())} signals; this one had {total_signals}. "
-                      "Fewer signals can mean the app improved, or simply that it was used less."]
+            L.append("")
+            prev_was_error = bool(prev_report and prev_report.get("kind") == "cycle"
+                                  and (prev_report.get("data") or {}).get("error"))
+            if prev_was_error:
+                L.append("The previous cycle also stopped with an error, so these are the same signals still "
+                         "waiting; a failed cycle doesn't use them up.")
+            elif last_finished_cycle:
+                studied = sum(((last_finished_cycle.get("data") or {}).get("signal_counts") or {}).values())
+                L.append(f"The last finished cycle ({_when(last_finished_cycle.get('created_at'))}) studied "
+                         f"{studied} signals; {total_signals} new ones have come in since. Fewer can mean the app "
+                         "improved, or simply that it was used less.")
+            if error_samples:
+                L += ["", f"**What the {_plural(signal_counts.get('error', 0), 'error')} were** (from the app's records):"]
+                for s in error_samples[:3]:
+                    L.append(f"- {s['count']}× in {s['where'] or 'unknown place'}: {_cell(s['message'], 200)}")
         else:
             L.append("**No new signals from real use.** Everything below is based on "
                      + ("your goal" if goal else "the app's design") + " only, not on evidence from the app.")
@@ -167,6 +210,12 @@ def build_report(
                 L.append(f"- **Idea ({_cell(i.get('effort', '?'), 10)} effort):** {_cell(i.get('title'))}. "
                          f"{_cell(i.get('why'), 200)}")
             L.append("")
+
+    if kind == "status" and error_samples:
+        L += ["## Errors since the last finished cycle", "", "_From the app's records._", ""]
+        for s in error_samples[:3]:
+            L.append(f"- {s['count']}× in {s['where'] or 'unknown place'}: {_cell(s['message'], 200)}")
+        L.append("")
 
     # ---- proposals ----
     if kind == "cycle" and cycle_proposals:
@@ -245,6 +294,10 @@ def build_report(
 
     # ---- next steps (facts → actions) ----
     steps = []
+    if error:
+        steps.append(fix_hint(error))
+    elif error_samples:
+        steps.append(fix_hint(error_samples[0]["message"]))
     if waiting:
         steps.append(f"Review the {_plural(len(waiting), 'proposal')} waiting in the R&D Lab: read each code "
                      "change, then approve or reject.")
@@ -257,6 +310,7 @@ def build_report(
 
     data = {
         "kind": kind, "goal": goal, "signal_counts": signal_counts, "error": error,
+        "error_samples": error_samples,
         "proposals": [p["id"] for p in cycle_proposals], "ready": [p["id"] for p in ready],
         "failed": [p["id"] for p in failed], "changes": changes, "usage": usage,
         "est_cost": round(total_cost, 4),

@@ -112,3 +112,38 @@ def test_history_records_every_status_change(tmp_db):
     db.update_proposal(pid, "applied")
     db.update_proposal(pid, "undone")
     assert [h["status"] for h in db.get_proposal(pid)["data"]["history"]] == ["ready", "applied", "undone"]
+
+
+# ---- fixes after the first real report (Oct 8) ----
+def test_times_are_shown_in_your_timezone_and_labelled(monkeypatch):
+    monkeypatch.setenv("PARLAYLAB_TZ", "America/New_York")
+    assert rnd_report._when("2026-10-08T17:44:00+00:00") == "Oct 8, 1:44 PM EDT"
+
+
+def test_failed_cycle_after_failed_cycle_is_not_compared(tmp_db):
+    prev = {"kind": "cycle", "created_at": "2026-10-08T17:43:00", "data": {"error": "x", "signal_counts": {"error": 7}}}
+    md, _ = rnd_report.build_report(kind="cycle", created_at="2026-10-08T17:44:00", signal_counts={"error": 8},
+                                    prev_report=prev, error="Nebius rejected the API key. Check it was copied in full.",
+                                    error_samples=[{"where": "slip_reader.image", "message": "Nebius rejected the API key.",
+                                                    "count": 5}])
+    assert "same signals still waiting" in md
+    assert "Last cycle had" not in md
+    assert "full.." not in md                                   # no double period
+    assert "5× in slip_reader.image: Nebius rejected the API key." in md
+    assert "Check your Nebius API key" in md                     # a concrete fix, first in next steps
+    assert "| Signal from real use | Waiting to be studied |" in md
+
+
+def test_finished_cycle_comparison(tmp_db):
+    last_ok = {"kind": "cycle", "created_at": "2026-10-07T12:00:00+00:00", "data": {"signal_counts": {"feedback": 4}}}
+    md, _ = rnd_report.build_report(kind="cycle", created_at="2026-10-08T17:44:00", signal_counts={"feedback": 2},
+                                    prev_report=last_ok, last_finished_cycle=last_ok)
+    assert "studied 4 signals; 2 new ones have come in since" in md
+
+
+def test_status_report_shows_waiting_errors(tmp_db):
+    db.log_event("error", {"where": "research_team", "message": "Nebius rejected the API key."})
+    db.log_event("error", {"where": "research_team", "message": "Nebius rejected the API key."})
+    rnd.write_report("status")
+    md = db.latest_rnd_report()["markdown"]
+    assert "2× in research_team" in md and "Check your Nebius API key" in md

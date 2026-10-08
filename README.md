@@ -58,6 +58,12 @@ Each proposal shows up with a plain-English summary, the code diff, the test res
 
 To run the tests, type this in the terminal at the bottom: `python -m pytest -q`
 
+**Is my Nebius key OK?** Paste this in the terminal. `200` means the key works; `401` means Nebius rejects it (fix your Codespaces secret, or paste a fresh key in the app's sidebar):
+
+```
+curl -s -o /dev/null -w "%{http_code}\n" https://api.tokenfactory.nebius.com/v1/models -H "Authorization: Bearer $NEBIUS_API_KEY"
+```
+
 Codespaces pauses after 30 minutes idle. Reopen it from github.com/codespaces and the app restarts with your parlays still saved. The free plan covers about 60 hours a month on this machine size.
 
 ## Run it on your own computer

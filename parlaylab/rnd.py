@@ -556,6 +556,13 @@ def run_rnd_cycle(api_key: str | None = None, goal: str = "", max_items: int = 3
     return {"issues": issues, "ideas": ideas, "plan": plan, "proposals": ids, "report": report_id}
 
 
+def error_samples() -> list[dict]:
+    """Most common error messages among signals not yet studied (facts from the app's records)."""
+    errs = [e["payload"] for e in db.list_events(only_new=True) if e["kind"] == "error"]
+    counts = Counter((p.get("where"), str(p.get("message"))[:300]) for p in errs)
+    return [{"where": w, "message": m, "count": n} for (w, m), n in counts.most_common(3)]
+
+
 def write_report(kind: str, *, goal: str = "", signal_counts: dict | None = None, prev: dict | None = None,
                  issues=None, ideas=None, cycle_ids=None, error: str | None = None) -> int:
     """Build and save a report. kind="status" is free: no model calls."""
@@ -564,6 +571,8 @@ def write_report(kind: str, *, goal: str = "", signal_counts: dict | None = None
     created_at = datetime.now().isoformat(timespec="microseconds")
     if prev is None:
         prev = db.latest_rnd_report()
+    last_ok = next((r for r in db.list_rnd_reports()
+                    if r["kind"] == "cycle" and not (r.get("data") or {}).get("error")), None)
     all_props = db.list_proposals()
     cycle = [p for p in all_props if p["id"] in set(cycle_ids or [])]
     cycle.sort(key=lambda p: p["id"])
@@ -572,5 +581,6 @@ def write_report(kind: str, *, goal: str = "", signal_counts: dict | None = None
         signal_counts=signal_counts if signal_counts is not None else db.event_counts(only_new=True),
         prev_report=prev, issues=issues, ideas=ideas, cycle_proposals=cycle, all_proposals=all_props,
         usage=usage_snapshot() if kind == "cycle" else {}, error=error,
+        error_samples=error_samples(), last_finished_cycle=last_ok,
     )
     return db.add_rnd_report(kind, markdown, data, created_at=created_at)
