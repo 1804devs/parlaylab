@@ -216,16 +216,91 @@ def _looks_like_bets(text: str) -> bool:
     return len(re.findall(r"(?<![\w.])[+-]\d{3,4}(?!\d)|\b[ou]\d+(\.5)?\b|[+-]\d+\.5", text, flags=re.I)) >= 1
 
 
+# ---------------- Google Photos / Google Drive share links ----------------
+# Sharing a screenshot "via Google" gives a link to the picture, not a sportsbook page.
+GOOGLE_PAGE_HOSTS = ("photos.app.goo.gl", "goo.gl", "photos.google.com", "drive.google.com")
+GOOGLE_IMAGE_HOSTS = ("googleusercontent.com", "drive.google.com", "drive.usercontent.google.com")
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
+
+
+def _host(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
+
+
+def _host_in(url: str, hosts) -> bool:
+    h = _host(url)
+    return any(h == d or h.endswith("." + d) for d in hosts)
+
+
+def is_google_link(url: str) -> bool:
+    return _host_in(url, GOOGLE_PAGE_HOSTS)
+
+
+def _get(url: str, timeout: int = 15):
+    return requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0 ParlayLab"}, allow_redirects=True)
+
+
+def _image_from_response(resp) -> tuple[bytes, str] | None:
+    mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if resp.ok and mime.startswith("image/") and 0 < len(resp.content) <= MAX_IMAGE_BYTES:
+        return resp.content, mime
+    return None
+
+
+def fetch_google_image(url: str, get=_get) -> tuple[bytes, str]:
+    """Download the picture behind a Google Photos or Google Drive share link."""
+    # Google Drive: /file/d/<id>/... or ?id=<id>
+    m = re.search(r"/file/d/([\w-]{10,})", url) or re.search(r"[?&]id=([\w-]{10,})", url)
+    if _host_in(url, ("drive.google.com",)) and m:
+        resp = get(f"https://drive.google.com/uc?export=download&id={m.group(1)}")
+        img = _image_from_response(resp)
+        if img:
+            return img
+        raise ShareError("Google Drive didn't hand over the picture. In Drive, set the file's sharing to "
+                         "'Anyone with the link', or download the screenshot and upload it here.")
+
+    # Google Photos: the share page names the picture in its og:image tag.
+    resp = get(url)
+    if not _host_in(resp.url or url, GOOGLE_PAGE_HOSTS):
+        raise ShareError("That Google link went somewhere other than Google Photos or Drive, so it wasn't opened.")
+    page = resp.text or ""
+    found = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', page) \
+        or re.search(r'(https://lh\d\.googleusercontent\.com/[\w\-./=%]+)', page)
+    if not found:
+        raise ShareError("That Google Photos link didn't show a picture. Make sure it's shared with a link "
+                         "(not only with people), or save the screenshot and upload it here.")
+    img_url = found.group(1).replace("&amp;", "&")
+    if not _host_in(img_url, GOOGLE_IMAGE_HOSTS):
+        raise ShareError("The picture in that Google link isn't on a Google address, so it wasn't downloaded.")
+    img_url = re.sub(r"=[wsh]\d+[^/?]*$", "", img_url) + "=w2048"  # ask for a sharp full-width copy
+    img = _image_from_response(get(img_url))
+    if not img:
+        raise ShareError("Couldn't download the picture from Google Photos. Save the screenshot and upload it here.")
+    return img
+
+
 def read_shared(shared: str, api_key: str | None = None, book: str | None = "Hard Rock Bet",
-                fetch=fetch_share_page) -> dict:
-    """Whatever the Share button gave you: text, a link, or both."""
+                fetch=fetch_share_page, fetch_image=fetch_google_image) -> dict:
+    """Whatever the Share button gave you: text, a sportsbook link, or a Google Photos/Drive link."""
     shared = (shared or "").strip()
     urls = _URL.findall(shared)
     text_part = _URL.sub(" ", shared).strip()
-    page_text = ""
+
+    # 1) A Google Photos / Drive link → it's a picture of the slip: read it like an upload.
+    google = [u for u in urls if is_google_link(u)]
+    if google:
+        image, mime = fetch_image(google[0])
+        result = read_slip_image(image, mime, api_key, book=book)
+        result["_shared_from"] = "google"
+        return result
+
+    # 2) A sportsbook page.
+    page_text, opened, blocked = "", [], []
     for url in urls:
         if not _allowed(url):
+            blocked.append(url)
             continue
+        opened.append(url)
         try:
             page_text = fetch(url)
         except Exception:
@@ -233,11 +308,17 @@ def read_shared(shared: str, api_key: str | None = None, book: str | None = "Har
         if page_text and _looks_like_bets(page_text):
             break
         page_text = ""
+
+    # 3) Plain text (with or without a link).
     combined = "\n".join(x for x in (text_part, page_text) if x)
     if not combined or not _looks_like_bets(combined):
-        if urls:
-            raise ShareError("That link didn't show the bets (the page may need you to sign in to Hard Rock). "
-                             "Take a screenshot of the slip and upload it instead, or paste the slip's text.")
+        if opened:
+            raise ShareError("The Hard Rock link opened, but the page didn't show the bets (it may need you to "
+                             "sign in, or only show them inside the app). Upload a screenshot instead.")
+        if blocked:
+            raise ShareError(f"That link goes to {_host(blocked[0]) or 'an unknown site'}, which the app doesn't "
+                             "open for safety. It reads Hard Rock links and Google Photos/Drive links. "
+                             "Upload a screenshot instead.")
         raise ShareError("That doesn't look like a bet slip: no odds or lines found. Paste the full slip text, "
                          "or upload a screenshot.")
     result = read_slip_text(combined[:8000], api_key, book=book)

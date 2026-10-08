@@ -207,10 +207,11 @@ with tab_add:
                     _show_models(results[0])
 
         with st.expander("📲 Paste what the Share button gave you"):
-            st.caption("In Hard Rock Bet, open the bet, tap **Share**, then **Copy**, and paste it here. "
-                       "Text works best. A Hard Rock link is opened if it shows the bets without signing in.")
+            st.caption("Paste a **Google Photos or Google Drive link** to a slip screenshot, the text of a slip, "
+                       "or a Hard Rock share link. Google links are downloaded and read like an uploaded "
+                       "screenshot; the picture must be shared with 'anyone with the link'.")
             shared = st.text_area("Shared slip", height=120, key="shared_text",
-                                  placeholder="Paste the shared text or link here")
+                                  placeholder="https://photos.app.goo.gl/…  or the slip's text")
             if st.button("Read shared slip", disabled=not shared.strip()):
                 with st.spinner("Reading..."):
                     try:

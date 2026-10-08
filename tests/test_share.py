@@ -50,14 +50,14 @@ def test_hard_rock_link_is_opened_when_it_shows_the_bets(monkeypatch):
 
 def test_link_that_needs_sign_in_gives_a_clear_message(monkeypatch):
     monkeypatch.setattr(slip_reader, "read_slip_text", _fake_text_reader([]))
-    with pytest.raises(ShareError, match="sign in"):
+    with pytest.raises(ShareError, match="opened, but the page didn't show the bets"):
         read_shared("https://share.hardrock.bet/b/abc123", "key", fetch=lambda url: "Log in to Hard Rock Bet")
 
 
 def test_other_sites_are_never_fetched(monkeypatch):
     fetched = []
     monkeypatch.setattr(slip_reader, "read_slip_text", _fake_text_reader([]))
-    with pytest.raises(ShareError):
+    with pytest.raises(ShareError, match="169.254.169.254, which the app doesn't open"):
         read_shared("http://169.254.169.254/latest https://evil.example/hardrock.bet", "key",
                     fetch=lambda url: fetched.append(url) or "Giants +3.5 -110")
     assert fetched == []
@@ -86,3 +86,69 @@ def test_sportsbook_hint_reaches_the_screenshot_reader(monkeypatch):
     out = slip_reader.read_slip_image(b"png", "image/png", "key", book="Hard Rock Bet")
     assert "This slip is from Hard Rock Bet." in seen[0] and "This slip is from Hard Rock Bet." in seen[1]
     assert out["book"] == "Hard Rock Bet"
+
+
+# ---- Google Photos / Drive share links (Oct 8: "it's a google share") ----
+from types import SimpleNamespace as NS
+
+
+def _resp(url, content=b"", text="", mime="text/html", ok=True):
+    return NS(url=url, content=content, text=text, ok=ok, headers={"Content-Type": mime})
+
+
+def test_google_photos_link_downloads_the_picture_and_reads_it(monkeypatch):
+    got = []
+    page = ('<html><head><meta property="og:image" '
+            'content="https://lh3.googleusercontent.com/pw/AP1abc=w600-h315-p-k"></head></html>')
+
+    def fake_get(url):
+        got.append(url)
+        if "photos" in url:
+            return _resp("https://photos.google.com/share/xyz", text=page)
+        return _resp(url, content=b"\x89PNG...", mime="image/png")
+
+    img, mime = slip_reader.fetch_google_image("https://photos.app.goo.gl/AbCdEf123", get=fake_get)
+    assert img == b"\x89PNG..." and mime == "image/png"
+    assert got[1] == "https://lh3.googleusercontent.com/pw/AP1abc=w2048"  # full-size copy
+
+
+def test_google_drive_link_uses_the_download_address():
+    got = []
+
+    def fake_get(url):
+        got.append(url)
+        return _resp(url, content=b"jpgdata", mime="image/jpeg")
+
+    img, mime = slip_reader.fetch_google_image("https://drive.google.com/file/d/1AbCdEfGhIjK_lMn/view?usp=sharing",
+                                               get=fake_get)
+    assert got == ["https://drive.google.com/uc?export=download&id=1AbCdEfGhIjK_lMn"] and mime == "image/jpeg"
+
+
+def test_private_drive_file_explains_how_to_share_it():
+    with pytest.raises(ShareError, match="Anyone with the link"):
+        slip_reader.fetch_google_image("https://drive.google.com/file/d/1AbCdEfGhIjK_lMn/view",
+                                       get=lambda url: _resp(url, text="<html>Sign in</html>"))
+
+
+def test_google_photos_link_without_a_picture():
+    with pytest.raises(ShareError, match="didn't show a picture"):
+        slip_reader.fetch_google_image("https://photos.app.goo.gl/x",
+                                       get=lambda url: _resp("https://photos.google.com/share/x", text="<html></html>"))
+
+
+def test_google_link_that_redirects_elsewhere_is_refused():
+    with pytest.raises(ShareError, match="somewhere other than Google"):
+        slip_reader.fetch_google_image("https://goo.gl/x", get=lambda url: _resp("https://evil.example/x", text=""))
+
+
+def test_read_shared_routes_google_links_to_the_screenshot_reader(monkeypatch):
+    calls = []
+
+    def fake_image_reader(image, mime, api_key=None, book=None):
+        calls.append((image, mime, book))
+        return {"book": book, "legs": [LEG_A]}
+
+    monkeypatch.setattr(slip_reader, "read_slip_image", fake_image_reader)
+    out = read_shared("https://photos.app.goo.gl/AbCdEf123", "key",
+                      fetch_image=lambda url: (b"png", "image/png"))
+    assert calls == [(b"png", "image/png", "Hard Rock Bet")] and out["_shared_from"] == "google"
