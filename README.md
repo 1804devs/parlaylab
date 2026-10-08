@@ -8,7 +8,7 @@ Built for the **Nebius × NVIDIA Global AI Hackathon 2026** (submissions close O
 
 | Step | What happens | Powered by |
 |---|---|---|
-| 1. Read the slip | Upload a screenshot from any sportsbook; the legs come back as an editable table so you can fix anything before saving | the best vision model on your Nebius account + **NVIDIA Nemotron 3 Super** to turn it into legs |
+| 1. Read the slip | Pick your sportsbook (Hard Rock Bet by default), then upload one or several screenshots (straight from your phone's Photos), or paste what the sportsbook's **Share** button gives you. Several slips are checked one at a time; one long slip screenshotted in parts is merged. The legs come back as an editable table so you can fix anything before saving | the best vision model on your Nebius account + **NVIDIA Nemotron 3 Super** to turn it into legs |
 | 2. Track it live | Moneylines, spreads, totals and player props are graded against live scores and box scores for NFL, NBA, MLB and NHL. Legs show winning/losing as games play, overs cash early, unders die early, and you get a pop-up when a leg settles or you're one leg away | ESPN public score feeds |
 | 3. Research team | Odds Analyst, Scout and Stats Analyst work in parallel; a Devil's Advocate attacks their notes; a Lead Analyst writes a scorecard with a verdict, per-leg confidence, the weakest leg and a suggestion | **NVIDIA Nemotron 3 Super** on Nebius Token Factory (+ optional Tavily web search) |
 | 4. R&D Lab | An R&D team of agents that improves the app itself, based on how it's actually being used (see below) | **NVIDIA Nemotron 3 Super** on Nebius Token Factory |

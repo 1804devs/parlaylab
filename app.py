@@ -19,7 +19,8 @@ from parlaylab.agents import leg_label, run_research_team  # noqa: E402
 from parlaylab.grader import grade_parlay  # noqa: E402
 from parlaylab.nebius_client import is_nvidia, model_report  # noqa: E402
 from parlaylab.odds import parlay_summary  # noqa: E402
-from parlaylab.slip_reader import LEG_FIELDS, read_slip_image, read_slip_text  # noqa: E402
+from parlaylab.slip_reader import (LEG_FIELDS, ShareError, merge_slips, read_shared,  # noqa: E402
+                                   read_slip_image)
 from parlaylab.stats_catalog import BET_TYPES, SPORTS, all_stat_keys  # noqa: E402
 
 st.set_page_config(page_title="ParlayLab", page_icon="🎟️", layout="wide")
@@ -126,56 +127,119 @@ def _ai_draft(result: dict, source: str) -> dict:
 
 
 # ---------------- add ----------------
+NUMERIC_FIELDS = ("line", "odds")
+
+
 def _editor_frame(legs: list[dict]) -> pd.DataFrame:
+    """Leg table with fixed column types. An all-empty column would otherwise be typed as
+    numbers and crash the text/dropdown editors (e.g. a slip with no game dates)."""
     df = pd.DataFrame(legs or [{}], columns=LEG_FIELDS)
+    for col in LEG_FIELDS:
+        if col in NUMERIC_FIELDS:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+        else:
+            df[col] = df[col].astype("object").where(df[col].notna(), None)
     return df
+
+
+BOOKS = ["Hard Rock Bet", "FanDuel", "DraftKings", "BetMGM", "Caesars", "Fanatics", "bet365", "ESPN BET", "Other"]
+
+
+def _queue_drafts(drafts: list[dict]) -> None:
+    """Show drafts one at a time; each gets its own editor so edits never leak between slips."""
+    for d in drafts:
+        st.session_state.draft_seq = st.session_state.get("draft_seq", 0) + 1
+        d["_id"] = st.session_state.draft_seq
+    queue = st.session_state.get("queue", []) + drafts
+    st.session_state.draft = st.session_state.get("draft") or (queue.pop(0) if queue else None)
+    st.session_state.queue = queue
+
+
+def _next_draft() -> None:
+    queue = st.session_state.get("queue", [])
+    st.session_state.draft = queue.pop(0) if queue else None
+    st.session_state.queue = queue
+
+
+def _show_models(d: dict) -> None:
+    used = d.get("_models") or {}
+    if used.get("vision") and used.get("vision") != used.get("parser"):
+        st.caption(f"Read by `{used['vision']}`, turned into legs by `{used['parser']}`.")
+    elif used.get("parser"):
+        st.caption(f"Read by `{used['parser']}`.")
 
 
 with tab_add:
     left, right = st.columns([1, 1.4], gap="large")
     with left:
-        st.markdown("#### 1. Upload your bet slip")
-        shot = st.file_uploader("Screenshot from any sportsbook", type=["png", "jpg", "jpeg", "webp"])
-        if shot:
-            st.image(shot, width="stretch")
-            if st.button("Read slip", type="primary", width="stretch"):
-                with st.spinner("Reading your slip..."):
+        st.markdown("#### 1. Add your slip")
+        book_pick = st.selectbox("Sportsbook", BOOKS, key="book_pick",
+                                 help="Telling the reader which app the slip is from helps it read the layout.")
+        book_hint = None if book_pick == "Other" else book_pick
+
+        shots = st.file_uploader("Screenshots: pick one or several", type=["png", "jpg", "jpeg", "webp"],
+                                 accept_multiple_files=True,
+                                 help="On your phone, tap here to pick slips straight from Photos.")
+        if shots:
+            one_slip = False
+            if len(shots) > 1:
+                one_slip = st.radio("These screenshots are…", ["Separate slips", "One long slip in parts"],
+                                    horizontal=True) == "One long slip in parts"
+            with st.expander(f"Preview ({len(shots)})", expanded=len(shots) == 1):
+                for s in shots:
+                    st.image(s, width="stretch")
+            label = "Read slip" if len(shots) == 1 else ("Read as one slip" if one_slip else f"Read {len(shots)} slips")
+            if st.button(label, type="primary", width="stretch"):
+                results, failed = [], []
+                with st.spinner("Reading..."):
+                    for s in shots:
+                        try:
+                            results.append(read_slip_image(s.getvalue(), s.type or "image/png", api_key, book=book_hint))
+                        except Exception as e:
+                            failed.append(s.name)
+                            db.log_event("error", {"where": "slip_reader.image", "message": str(e)})
+                            st.error(f"Couldn't read {s.name}: {e}")
+                if results:
+                    drafts = [merge_slips(results)] if one_slip else results
+                    _queue_drafts([_ai_draft(d, "screenshot") for d in drafts])
+                    st.success(f"Read {len(results)} screenshot(s)" + (f", {len(failed)} failed" if failed else "")
+                               + ". Check the legs on the right.")
+                    _show_models(results[0])
+
+        with st.expander("📲 Paste what the Share button gave you"):
+            st.caption("In Hard Rock Bet, open the bet, tap **Share**, then **Copy**, and paste it here. "
+                       "Text works best. A Hard Rock link is opened if it shows the bets without signing in.")
+            shared = st.text_area("Shared slip", height=120, key="shared_text",
+                                  placeholder="Paste the shared text or link here")
+            if st.button("Read shared slip", disabled=not shared.strip()):
+                with st.spinner("Reading..."):
                     try:
-                        st.session_state.draft = _ai_draft(
-                            read_slip_image(shot.getvalue(), shot.type or "image/png", api_key), "screenshot")
-                        used = st.session_state.draft.get("_models") or {}
-                        st.success(f"Found {len(st.session_state.draft['legs'])} legs. Check them on the right.")
-                        if used.get("vision") and used.get("vision") != used.get("parser"):
-                            st.caption(f"Read by `{used['vision']}`, turned into legs by `{used['parser']}`.")
-                        elif used.get("parser"):
-                            st.caption(f"Read by `{used['parser']}`.")
+                        d = read_shared(shared, api_key, book=book_hint)
+                        _queue_drafts([_ai_draft(d, "share_" + d.get("_shared_from", "text"))])
+                        st.success(f"Found {len(d['legs'])} legs. Check them on the right.")
+                    except ShareError as e:
+                        st.warning(str(e))
                     except Exception as e:
-                        db.log_event("error", {"where": "slip_reader.image", "message": str(e)})
-                        st.error(f"Couldn't read the slip: {e}")
-        with st.expander("No screenshot? Paste the slip text instead"):
-            pasted = st.text_area("Slip text", height=140,
-                                  placeholder="Knicks -4.5 (-110)\nJalen Brunson over 26.5 points (-115)\n...")
-            if st.button("Parse text") and pasted.strip():
-                with st.spinner("Parsing..."):
-                    try:
-                        st.session_state.draft = _ai_draft(read_slip_text(pasted, api_key), "text")
-                    except Exception as e:
-                        db.log_event("error", {"where": "slip_reader.text", "message": str(e)})
-                        st.error(f"Couldn't parse it: {e}")
-            if st.button("Start blank"):
-                st.session_state.draft = {"legs": [], "stake": None, "book": None, "total_odds": None}
+                        db.log_event("error", {"where": "slip_reader.share", "message": str(e)})
+                        st.error(f"Couldn't read it: {e}")
+        if st.button("Start blank (type the legs yourself)"):
+            _queue_drafts([{"legs": [], "stake": None, "book": book_hint, "total_odds": None}])
 
     with right:
         st.markdown("#### 2. Check the legs")
         draft = st.session_state.get("draft")
+        waiting = len(st.session_state.get("queue", []))
         if not draft:
-            st.info("Upload a slip on the left and the legs will show up here for you to check before saving.")
+            st.info("Add a slip on the left and the legs will show up here for you to check before saving.")
         else:
+            if waiting:
+                st.caption(f"{waiting} more slip(s) waiting after this one.")
+            did = draft.get("_id", 0)
             edited = st.data_editor(
                 _editor_frame(draft["legs"]),
                 num_rows="dynamic",
                 width="stretch",
-                key="leg_editor",
+                key=f"leg_editor_{did}",
                 column_config={
                     "sport": st.column_config.SelectboxColumn(options=SPORTS, required=True),
                     "type": st.column_config.SelectboxColumn(options=BET_TYPES, required=True),
@@ -187,10 +251,11 @@ with tab_add:
                 },
             )
             c1, c2, c3 = st.columns(3)
-            stake = c1.number_input("Stake ($)", min_value=0.0, value=float(draft.get("stake") or 10), step=5.0)
-            book = c2.text_input("Sportsbook", value=draft.get("book") or "")
-            total_odds = c3.number_input("Total odds (American)", value=float(draft.get("total_odds") or 0), step=10.0,
-                                         help="Leave 0 to calculate from the legs.")
+            stake = c1.number_input("Stake ($)", min_value=0.0, value=float(draft.get("stake") or 10), step=5.0,
+                                    key=f"stake_{did}")
+            book = c2.text_input("Sportsbook", value=draft.get("book") or "", key=f"book_{did}")
+            total_odds = c3.number_input("Total odds (American)", value=float(draft.get("total_odds") or 0),
+                                         step=10.0, key=f"odds_{did}", help="Leave 0 to calculate from the legs.")
 
             legs = [{k: (None if pd.isna(v) else v) for k, v in row.items()} for row in edited.to_dict("records")]
             legs = [l for l in legs if l.get("sport") and l.get("type")]
@@ -204,13 +269,18 @@ with tab_add:
                     f"<span class='pl-chip'>Book's implied chance {m['implied_prob']:.1%}</span>",
                     unsafe_allow_html=True,
                 )
-            if st.button("Save & start tracking", type="primary", disabled=not legs):
+            s1, s2 = st.columns([2, 1])
+            if s1.button("Save & start tracking", type="primary", disabled=not legs, key=f"save_{did}"):
                 pid = db.add_parlay(legs, stake, book or None, total_odds or None)
                 if draft.get("_ai_legs") is not None:
                     db.log_event("slip_correction", {"ai_legs": draft["_ai_legs"], "saved_legs": legs,
                                                      "book": book or draft.get("book"), "source": draft.get("_source")})
-                st.session_state.pop("draft", None)
-                st.success(f"Parlay #{pid} saved. Open the Live tracker tab.")
+                _next_draft()
+                st.toast(f"Parlay #{pid} saved. It's in the Live tracker.")
+                st.rerun()
+            if s2.button("Skip this slip", key=f"skip_{did}"):
+                _next_draft()
+                st.rerun()
 
 
 # ---------------- track ----------------

@@ -6,7 +6,11 @@ one if available); pasted text and the final structuring go to Nemotron.
 from __future__ import annotations
 
 import base64
+import re
 from datetime import date
+from urllib.parse import urlparse
+
+import requests
 
 from .nebius_client import chat, extract_json, pick_model
 from .learned import slip_rules
@@ -98,7 +102,12 @@ def _image_part(image_bytes: bytes, mime: str) -> dict:
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
 
 
-def read_slip_image(image_bytes: bytes, mime: str = "image/png", api_key: str | None = None) -> dict:
+def _book_hint(book: str | None) -> str:
+    return f" This slip is from {book}." if book else ""
+
+
+def read_slip_image(image_bytes: bytes, mime: str = "image/png", api_key: str | None = None,
+                    book: str | None = None) -> dict:
     """Screenshot → legs.
 
     A Nemotron vision model reads the slip straight to JSON. Any other vision model
@@ -109,33 +118,128 @@ def read_slip_image(image_bytes: bytes, mime: str = "image/png", api_key: str | 
     if "nemotron" in vision.lower():  # Nemotron vision models read straight to JSON
         messages = [
             {"role": "system", "content": _instructions()},
-            {"role": "user", "content": [{"type": "text", "text": "Read this bet slip and return the JSON."},
+            {"role": "user", "content": [{"type": "text",
+                                          "text": "Read this bet slip and return the JSON." + _book_hint(book)},
                                          _image_part(image_bytes, mime)]},
         ]
         result = _normalize(extract_json(chat(messages, model=vision, api_key=api_key, temperature=0.0,
                                                  think=False)))
         result["_models"] = {"vision": vision, "parser": vision}
-        return result
+        return _with_book(result, book)
 
     transcript = chat(
-        [{"role": "user", "content": [{"type": "text", "text": TRANSCRIBE_PROMPT}, _image_part(image_bytes, mime)]}],
+        [{"role": "user", "content": [{"type": "text", "text": TRANSCRIBE_PROMPT + _book_hint(book)},
+                                      _image_part(image_bytes, mime)]}],
         model=vision, api_key=api_key, temperature=0.0, max_tokens=2000,
     )
-    result = read_slip_text(transcript, api_key)
+    result = read_slip_text(transcript, api_key, book=book)
     result["_models"] = {"vision": vision, "parser": result["_models"]["parser"]}
     result["_transcript"] = transcript
     return result
 
 
-def read_slip_text(slip_text: str, api_key: str | None = None) -> dict:
+def read_slip_text(slip_text: str, api_key: str | None = None, book: str | None = None) -> dict:
     parser = pick_model("agent", api_key)
     messages = [
         {"role": "system", "content": _instructions()},
-        {"role": "user", "content": f"Bet slip text:\n\n{slip_text}"},
+        {"role": "user", "content": f"Bet slip text:{_book_hint(book)}\n\n{slip_text}"},
     ]
     # Turning text into JSON needs no step-by-step thinking: skip it (faster, cheaper, and
     # small reasoning models otherwise spend their whole budget thinking).
     result = _normalize(extract_json(chat(messages, model="agent", api_key=api_key,
                                           temperature=0.0, max_tokens=4000, think=False)))
     result["_models"] = {"vision": None, "parser": parser}
+    return _with_book(result, book)
+
+
+def _with_book(result: dict, book: str | None) -> dict:
+    if book and not result.get("book"):
+        result["book"] = book
+    return result
+
+
+# ---------------- several screenshots of one slip ----------------
+
+def _leg_key(leg: dict) -> tuple:
+    def n(v):
+        return str(v).strip().lower() if v is not None else ""
+    return tuple(n(leg.get(f)) for f in ("type", "team", "player", "stat", "side", "line"))
+
+
+def merge_slips(results: list[dict]) -> dict:
+    """One long slip screenshotted in parts → one slip. Legs that appear in two
+    overlapping screenshots are kept once."""
+    merged = {"book": None, "stake": None, "total_odds": None, "potential_payout": None, "legs": []}
+    seen = set()
+    for r in results:
+        for f in ("book", "stake", "total_odds", "potential_payout"):
+            if merged[f] is None and r.get(f) is not None:
+                merged[f] = r[f]
+        for leg in r.get("legs") or []:
+            k = _leg_key(leg)
+            if k not in seen:
+                seen.add(k)
+                merged["legs"].append(leg)
+    merged["_models"] = (results[0].get("_models") if results else None)
+    return merged
+
+
+# ---------------- what a sportsbook's Share button gives you ----------------
+
+# Only these sites are fetched. Anything else is treated as plain text.
+SHARE_DOMAINS = ("hardrock.bet", "hardrocksportsbook.com", "hardrockbet.com")
+_URL = re.compile(r"https?://[^\s<>\"']+")
+
+
+class ShareError(RuntimeError):
+    pass
+
+
+def _allowed(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in SHARE_DOMAINS)
+
+
+def fetch_share_page(url: str, timeout: int = 10) -> str:
+    """Visible text of a shared-bet page, or '' if it can't be read without signing in."""
+    resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0 ParlayLab"})
+    resp.raise_for_status()
+    html = resp.text
+    html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+    text = re.sub(r"(?s)<[^>]+>", " ", html)
+    text = re.sub(r"&nbsp;|&#160;", " ", text)
+    return " ".join(text.split())
+
+
+def _looks_like_bets(text: str) -> bool:
+    """Real slip text has American odds (+150, -110) or lines (o47.5, +3.5)."""
+    return len(re.findall(r"(?<![\w.])[+-]\d{3,4}(?!\d)|\b[ou]\d+(\.5)?\b|[+-]\d+\.5", text, flags=re.I)) >= 1
+
+
+def read_shared(shared: str, api_key: str | None = None, book: str | None = "Hard Rock Bet",
+                fetch=fetch_share_page) -> dict:
+    """Whatever the Share button gave you: text, a link, or both."""
+    shared = (shared or "").strip()
+    urls = _URL.findall(shared)
+    text_part = _URL.sub(" ", shared).strip()
+    page_text = ""
+    for url in urls:
+        if not _allowed(url):
+            continue
+        try:
+            page_text = fetch(url)
+        except Exception:
+            page_text = ""
+        if page_text and _looks_like_bets(page_text):
+            break
+        page_text = ""
+    combined = "\n".join(x for x in (text_part, page_text) if x)
+    if not combined or not _looks_like_bets(combined):
+        if urls:
+            raise ShareError("That link didn't show the bets (the page may need you to sign in to Hard Rock). "
+                             "Take a screenshot of the slip and upload it instead, or paste the slip's text.")
+        raise ShareError("That doesn't look like a bet slip: no odds or lines found. Paste the full slip text, "
+                         "or upload a screenshot.")
+    result = read_slip_text(combined[:8000], api_key, book=book)
+    result["_shared_from"] = "link" if page_text else "text"
     return result
