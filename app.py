@@ -46,6 +46,23 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+def app_url() -> str | None:
+    """This app's address when it runs in a GitHub Codespace (they set these two variables)."""
+    name, domain = os.getenv("CODESPACE_NAME"), os.getenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN")
+    return f"https://{name}-8501.{domain}/" if name and domain else None
+
+
+@st.cache_data(show_spinner=False)
+def qr_png(url: str) -> bytes:
+    from io import BytesIO
+
+    import qrcode
+
+    buf = BytesIO()
+    qrcode.make(url, box_size=8, border=2).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 # ---------------- sidebar ----------------
 with st.sidebar:
     st.subheader("Settings")
@@ -103,6 +120,15 @@ with st.sidebar:
         else:
             st.caption("Click **Check my models** after pasting your key.")
     st.caption("Scores: ESPN public feeds.")
+    with st.expander("📱 Use on your phone", expanded=False):
+        phone_url = app_url()
+        if phone_url:
+            st.image(qr_png(phone_url), width=180)
+            st.caption("Scan with your phone camera, sign in to GitHub if asked, then tap the upload box "
+                       "to pick screenshots straight from Photos. Tip: add it to your home screen.")
+            st.code(phone_url, language=None)
+        else:
+            st.caption("Open this app's address on your phone's browser (the one in your address bar now).")
     st.divider()
     with st.form("feedback", clear_on_submit=True, border=False):
         st.markdown("**💡 Tell the R&D team**")
