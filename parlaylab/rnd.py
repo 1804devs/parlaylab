@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import db, learned
-from .nebius_client import AGENT_MODEL, chat, extract_json
+from .nebius_client import chat, extract_json, model_name
 
 PROJECT = Path(__file__).resolve().parent.parent
 BACKUPS = PROJECT / ".rnd_backups"
@@ -369,7 +369,7 @@ def _ask(role: str, task: str, payload: dict, api_key: str | None, max_tokens: i
             {"role": "system", "content": f"{GROUND_RULES}\n\nYour role: {role}"},
             {"role": "user", "content": f"{task}\n\nDATA:\n{json.dumps(payload, indent=1, default=str)}"},
         ],
-        model=AGENT_MODEL, api_key=api_key, max_tokens=max_tokens, temperature=0.2,
+        model="agent", api_key=api_key, max_tokens=max_tokens, temperature=0.2,
     )
     return _parse_json(reply)
 
@@ -497,7 +497,7 @@ def build_proposal(item: dict, api_key=None, progress: ProgressFn = lambda m: No
             break
         previous, problem = work, "Tests failed:\n" + tests["output"]
 
-    data = {"item": item, "attempts": attempts, "model": AGENT_MODEL}
+    data = {"item": item, "attempts": attempts, "model": model_name("agent", api_key)}
     if work:
         data.update(summary=work["summary"], edits=work["edits"], rule_changes=work["rule_changes"])
     if problems or not tests or not tests.get("passed"):

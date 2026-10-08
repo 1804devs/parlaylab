@@ -8,7 +8,7 @@ Built for the **Nebius × NVIDIA Global AI Hackathon 2026** (submissions close O
 
 | Step | What happens | Powered by |
 |---|---|---|
-| 1. Read the slip | Upload a screenshot from any sportsbook; the legs come back as an editable table so you can fix anything before saving | **NVIDIA Nemotron 3 Nano Omni** (vision) on Nebius Token Factory |
+| 1. Read the slip | Upload a screenshot from any sportsbook; the legs come back as an editable table so you can fix anything before saving | the best vision model on your Nebius account + **NVIDIA Nemotron 3 Super** to turn it into legs |
 | 2. Track it live | Moneylines, spreads, totals and player props are graded against live scores and box scores for NFL, NBA, MLB and NHL. Legs show winning/losing as games play, overs cash early, unders die early, and you get a pop-up when a leg settles or you're one leg away | ESPN public score feeds |
 | 3. Research team | Odds Analyst, Scout and Stats Analyst work in parallel; a Devil's Advocate attacks their notes; a Lead Analyst writes a scorecard with a verdict, per-leg confidence, the weakest leg and a suggestion | **NVIDIA Nemotron 3 Super** on Nebius Token Factory (+ optional Tavily web search) |
 | 4. R&D Lab | An R&D team of agents that improves the app itself, based on how it's actually being used (see below) | **NVIDIA Nemotron 3 Super** on Nebius Token Factory |
@@ -115,7 +115,7 @@ Add more in `parlaylab/stats_catalog.py` by mapping a stat to the ESPN box-score
 
 These couldn't be tested live while building, so check them first:
 
-1. **Model names.** If Token Factory rejects a model ID, copy the exact ID from the Token Factory model list into `.env` (`NEBIUS_VISION_MODEL`, `NEBIUS_AGENT_MODEL`).
+1. **Models.** The app asks Nebius which models your key can use and picks automatically: Nemotron 3 Super for the agents, and an NVIDIA vision model for screenshots if your account has one. If not, another vision model copies the slip out as text and Nemotron turns it into legs. Open **🤖 Models** in the sidebar and click **Check my models** to see or change the picks.
 2. **ESPN labels for props.** Game legs (moneyline, spread, total) use stable fields. Prop labels like `PTS` or `SV` should be confirmed against one finished game per sport. A prop that shows ❓ during a live game usually means a label in `stats_catalog.py` needs adjusting.
 3. **Slip reading.** Try screenshots from the books you use. The edit table catches mistakes before anything is saved.
 

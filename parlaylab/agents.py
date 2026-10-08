@@ -22,7 +22,7 @@ from typing import Callable
 import requests
 
 from . import scores
-from .nebius_client import AGENT_MODEL, chat, extract_json
+from .nebius_client import chat, extract_json, model_name
 from .odds import parlay_summary
 
 GROUND_RULES = (
@@ -149,7 +149,7 @@ def _agent(role: str, task: str, payload: dict, api_key: str | None) -> str:
             {"role": "system", "content": f"{GROUND_RULES}\n\nYour role: {role}"},
             {"role": "user", "content": f"{task}\n\nDATA:\n{json.dumps(payload, indent=1, default=str)}"},
         ],
-        model=AGENT_MODEL,
+        model="agent",
         api_key=api_key,
     )
 
@@ -249,4 +249,4 @@ def run_research_team(parlay: dict, api_key: str | None = None,
     progress("Lead Analyst is writing the scorecard")
     final = lead_analyst(ctx, math, notes, api_key)
     return {"created": date.today().isoformat(), "math": math, "notes": notes, "final": final,
-            "model": AGENT_MODEL}
+            "model": model_name("agent", api_key)}

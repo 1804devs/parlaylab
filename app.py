@@ -17,7 +17,7 @@ import copy  # noqa: E402
 from parlaylab import db, learned, rnd  # noqa: E402
 from parlaylab.agents import leg_label, run_research_team  # noqa: E402
 from parlaylab.grader import grade_parlay  # noqa: E402
-from parlaylab.nebius_client import AGENT_MODEL, VISION_MODEL  # noqa: E402
+from parlaylab.nebius_client import is_nvidia, model_report  # noqa: E402
 from parlaylab.odds import parlay_summary  # noqa: E402
 from parlaylab.slip_reader import LEG_FIELDS, read_slip_image, read_slip_text  # noqa: E402
 from parlaylab.stats_catalog import BET_TYPES, SPORTS, all_stat_keys  # noqa: E402
@@ -52,8 +52,37 @@ with st.sidebar:
     auto = st.toggle("Auto-refresh live scores", value=True)
     every = st.select_slider("Refresh every", options=[30, 60, 120, 300], value=60, format_func=lambda s: f"{s}s")
     st.divider()
-    st.caption(f"Slip reader: `{VISION_MODEL}`\n\nResearch team: `{AGENT_MODEL}`\n\n"
-               "Both NVIDIA open models served by Nebius Token Factory. Scores: ESPN public feeds.")
+    with st.expander("🤖 Models", expanded=False):
+        st.caption("Picked automatically from the models your Nebius key can use. "
+                   "NVIDIA Nemotron runs the agents and turns slips into legs.")
+        if st.button("Check my models", width="stretch", disabled=not api_key):
+            try:
+                st.session_state.models = model_report(api_key)
+            except Exception as e:
+                st.error(str(e))
+        rep = st.session_state.get("models")
+        if rep:
+            for err in rep["errors"]:
+                st.warning(err)
+            avail = rep["available"]
+            if not avail:
+                st.warning("Nebius didn't return a model list. Check the key and your credits.")
+            else:
+                for role, env, label in (("agent", "NEBIUS_AGENT_MODEL", "Agents + slip parsing"),
+                                         ("vision", "NEBIUS_VISION_MODEL", "Screenshot reader")):
+                    options = ["(automatic)"] + avail
+                    current = os.getenv(env) if os.getenv(env) in avail else "(automatic)"
+                    pick = st.selectbox(f"{label} · now: {rep.get(role) or 'none'}", options,
+                                        index=options.index(current), key=f"pick_{role}")
+                    if pick == "(automatic)":
+                        os.environ.pop(env, None)
+                    else:
+                        os.environ[env] = pick
+                nvidia = [m for m in avail if is_nvidia(m)]
+                st.caption(f"{len(avail)} models on your account, {len(nvidia)} from NVIDIA.")
+        else:
+            st.caption("Click **Check my models** after pasting your key.")
+    st.caption("Scores: ESPN public feeds.")
     st.divider()
     with st.form("feedback", clear_on_submit=True, border=False):
         st.markdown("**💡 Tell the R&D team**")
@@ -91,12 +120,17 @@ with tab_add:
         shot = st.file_uploader("Screenshot from any sportsbook", type=["png", "jpg", "jpeg", "webp"])
         if shot:
             st.image(shot, width="stretch")
-            if st.button("Read slip with Nemotron", type="primary", width="stretch"):
+            if st.button("Read slip", type="primary", width="stretch"):
                 with st.spinner("Reading your slip..."):
                     try:
                         st.session_state.draft = _ai_draft(
                             read_slip_image(shot.getvalue(), shot.type or "image/png", api_key), "screenshot")
+                        used = st.session_state.draft.get("_models") or {}
                         st.success(f"Found {len(st.session_state.draft['legs'])} legs. Check them on the right.")
+                        if used.get("vision") and used.get("vision") != used.get("parser"):
+                            st.caption(f"Read by `{used['vision']}`, turned into legs by `{used['parser']}`.")
+                        elif used.get("parser"):
+                            st.caption(f"Read by `{used['parser']}`.")
                     except Exception as e:
                         db.log_event("error", {"where": "slip_reader.image", "message": str(e)})
                         st.error(f"Couldn't read the slip: {e}")

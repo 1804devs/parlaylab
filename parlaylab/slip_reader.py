@@ -1,14 +1,14 @@
 """Turn a bet-slip screenshot (or pasted text) into structured legs.
 
-Screenshots go to NVIDIA Nemotron 3 Nano Omni (vision) on Nebius Token
-Factory. Pasted text goes to Nemotron 3 Super.
+Screenshots go to the best vision model on your Nebius account (an NVIDIA
+one if available); pasted text and the final structuring go to Nemotron.
 """
 from __future__ import annotations
 
 import base64
 from datetime import date
 
-from .nebius_client import AGENT_MODEL, VISION_MODEL, chat, extract_json
+from .nebius_client import chat, extract_json, is_nvidia, pick_model
 from .learned import slip_rules
 from .stats_catalog import BET_TYPES, PROP_STATS, SPORTS, stats_for
 
@@ -85,26 +85,53 @@ def _normalize(data: dict) -> dict:
     }
 
 
-def read_slip_image(image_bytes: bytes, mime: str = "image/png", api_key: str | None = None) -> dict:
+TRANSCRIBE_PROMPT = (
+    "This is a screenshot of a sportsbook bet slip. Copy out every bet on it as plain text, one leg per "
+    "line, exactly as written: team or player, the bet (moneyline, spread, total, or player prop and stat), "
+    "over/under, the line, the odds, and the game and date if shown. Then copy the sportsbook name, stake, "
+    "total parlay odds and potential payout if shown. Write only what you can read; don't guess."
+)
+
+
+def _image_part(image_bytes: bytes, mime: str) -> dict:
     b64 = base64.b64encode(image_bytes).decode()
-    messages = [
-        {"role": "system", "content": _instructions()},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Read this bet slip and return the JSON."},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-            ],
-        },
-    ]
-    reply = chat(messages, model=VISION_MODEL, api_key=api_key, temperature=0.0)
-    return _normalize(extract_json(reply))
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
+def read_slip_image(image_bytes: bytes, mime: str = "image/png", api_key: str | None = None) -> dict:
+    """Screenshot → legs.
+
+    With an NVIDIA vision model on your account, it reads the slip straight to JSON.
+    Otherwise the vision model you have copies the slip out as text, and Nemotron
+    turns that text into legs (so an NVIDIA model still does the understanding).
+    """
+    vision = pick_model("vision", api_key)
+    if is_nvidia(vision):
+        messages = [
+            {"role": "system", "content": _instructions()},
+            {"role": "user", "content": [{"type": "text", "text": "Read this bet slip and return the JSON."},
+                                         _image_part(image_bytes, mime)]},
+        ]
+        result = _normalize(extract_json(chat(messages, model=vision, api_key=api_key, temperature=0.0)))
+        result["_models"] = {"vision": vision, "parser": vision}
+        return result
+
+    transcript = chat(
+        [{"role": "user", "content": [{"type": "text", "text": TRANSCRIBE_PROMPT}, _image_part(image_bytes, mime)]}],
+        model=vision, api_key=api_key, temperature=0.0, max_tokens=2000,
+    )
+    result = read_slip_text(transcript, api_key)
+    result["_models"] = {"vision": vision, "parser": result["_models"]["parser"]}
+    result["_transcript"] = transcript
+    return result
 
 
 def read_slip_text(slip_text: str, api_key: str | None = None) -> dict:
+    parser = pick_model("agent", api_key)
     messages = [
         {"role": "system", "content": _instructions()},
         {"role": "user", "content": f"Bet slip text:\n\n{slip_text}"},
     ]
-    reply = chat(messages, model=AGENT_MODEL, api_key=api_key, temperature=0.0)
-    return _normalize(extract_json(reply))
+    result = _normalize(extract_json(chat(messages, model=parser, api_key=api_key, temperature=0.0)))
+    result["_models"] = {"vision": None, "parser": parser}
+    return result
