@@ -9,4 +9,6 @@ def offline(monkeypatch):
     monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
     monkeypatch.delenv("NEBIUS_AGENT_MODEL", raising=False)
     monkeypatch.delenv("NEBIUS_VISION_MODEL", raising=False)
+    monkeypatch.delenv("NEBIUS_BUILDER_MODEL", raising=False)
+    monkeypatch.delenv("PARLAYLAB_MODE", raising=False)
     nebius_client._MODELS_CACHE.clear()

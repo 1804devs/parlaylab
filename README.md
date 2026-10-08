@@ -116,8 +116,9 @@ Add more in `parlaylab/stats_catalog.py` by mapping a stat to the ESPN box-score
 These couldn't be tested live while building, so check them first:
 
 1. **Models.** The app asks Nebius which models your key can use and picks automatically: Nemotron 3 Super for the agents, and an NVIDIA vision model for screenshots if your account has one. If not, another vision model copies the slip out as text and Nemotron turns it into legs. Open **🤖 Models** in the sidebar and click **Check my models** to see or change the picks.
-2. **ESPN labels for props.** Game legs (moneyline, spread, total) use stable fields. Prop labels like `PTS` or `SV` should be confirmed against one finished game per sport. A prop that shows ❓ during a live game usually means a label in `stats_catalog.py` needs adjusting.
-3. **Slip reading.** Try screenshots from the books you use. The edit table catches mistakes before anything is saved.
+2. **Cost.** The sidebar's **Model cost** switch defaults to **Cheap**: Nemotron 3 Nano (~$0.06/$0.24 per 1M tokens) for the research team and slip parsing, NVIDIA Cosmos or Gemma 3 (~$0.10/$0.30) for screenshots, and Nemotron 3 Super (~$0.30/$0.90) only for the R&D Engineer and Reviewer, which write code. **Best** uses Super everywhere.
+3. **ESPN labels for props.** Game legs (moneyline, spread, total) use stable fields. Prop labels like `PTS` or `SV` should be confirmed against one finished game per sport. A prop that shows ❓ during a live game usually means a label in `stats_catalog.py` needs adjusting.
+4. **Slip reading.** Try screenshots from the books you use. The edit table catches mistakes before anything is saved.
 
 ## Responsible use
 

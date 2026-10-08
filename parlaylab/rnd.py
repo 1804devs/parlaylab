@@ -363,13 +363,14 @@ def _parse_json(reply: str):
         return extract_json(reply)
 
 
-def _ask(role: str, task: str, payload: dict, api_key: str | None, max_tokens: int = 6000):
+def _ask(role: str, task: str, payload: dict, api_key: str | None, max_tokens: int = 6000,
+         model: str = "agent"):
     reply = chat(
         [
             {"role": "system", "content": f"{GROUND_RULES}\n\nYour role: {role}"},
             {"role": "user", "content": f"{task}\n\nDATA:\n{json.dumps(payload, indent=1, default=str)}"},
         ],
-        model="agent", api_key=api_key, max_tokens=max_tokens, temperature=0.2,
+        model=model, api_key=api_key, max_tokens=max_tokens, temperature=0.2,
     )
     return _parse_json(reply)
 
@@ -448,7 +449,7 @@ def engineer(item: dict, api_key=None, previous: dict | None = None, problem: st
         payload["your_previous_attempt"] = previous
         payload["what_went_wrong"] = problem
         task += "\n\nYour previous attempt failed. Fix it using what_went_wrong."
-    out = _ask("Engineer", task, payload, api_key, max_tokens=16000)
+    out = _ask("Engineer", task, payload, api_key, max_tokens=16000, model="builder")
     if not isinstance(out, dict):
         out = {}
     return {"summary": out.get("summary", ""), "rule_changes": out.get("rule_changes") or {},
@@ -465,6 +466,7 @@ def reviewer(item: dict, work: dict, diff: str, tests: dict, api_key=None) -> di
         '"notes": "2-4 short sentences in plain words"}',
         {"task": item, "summary": work.get("summary"), "diff": diff[:30000], "tests": tests},
         api_key,
+        model="builder",
     )
     return out if isinstance(out, dict) else {"risk": "unknown", "recommend": "reject", "notes": str(out)}
 
@@ -497,7 +499,7 @@ def build_proposal(item: dict, api_key=None, progress: ProgressFn = lambda m: No
             break
         previous, problem = work, "Tests failed:\n" + tests["output"]
 
-    data = {"item": item, "attempts": attempts, "model": model_name("agent", api_key)}
+    data = {"item": item, "attempts": attempts, "model": model_name("builder", api_key)}
     if work:
         data.update(summary=work["summary"], edits=work["edits"], rule_changes=work["rule_changes"])
     if problems or not tests or not tests.get("passed"):

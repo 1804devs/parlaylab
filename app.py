@@ -52,6 +52,14 @@ with st.sidebar:
     auto = st.toggle("Auto-refresh live scores", value=True)
     every = st.select_slider("Refresh every", options=[30, 60, 120, 300], value=60, format_func=lambda s: f"{s}s")
     st.divider()
+    cost = st.radio("Model cost", ["Cheap", "Best"], horizontal=True,
+                    index=0 if (os.getenv("PARLAYLAB_MODE") or "cheap").lower() != "best" else 1,
+                    help="Cheap: Nemotron 3 Nano (~$0.06/$0.24 per 1M tokens) for most work. "
+                         "Best: Nemotron 3 Super (~$0.30/$0.90) everywhere. "
+                         "The R&D Engineer always uses Super because it writes code.")
+    if os.environ.get("PARLAYLAB_MODE") != cost.lower():
+        os.environ["PARLAYLAB_MODE"] = cost.lower()
+        st.session_state.pop("models", None)
     with st.expander("🤖 Models", expanded=False):
         st.caption("Picked automatically from the models your Nebius key can use. "
                    "NVIDIA Nemotron runs the agents and turns slips into legs.")
@@ -69,6 +77,7 @@ with st.sidebar:
                 st.warning("Nebius didn't return a model list. Check the key and your credits.")
             else:
                 for role, env, label in (("agent", "NEBIUS_AGENT_MODEL", "Agents + slip parsing"),
+                                         ("builder", "NEBIUS_BUILDER_MODEL", "R&D Engineer"),
                                          ("vision", "NEBIUS_VISION_MODEL", "Screenshot reader")):
                     options = ["(automatic)"] + avail
                     current = os.getenv(env) if os.getenv(env) in avail else "(automatic)"

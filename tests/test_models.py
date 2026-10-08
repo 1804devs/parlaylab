@@ -6,7 +6,7 @@ import pytest
 from parlaylab import nebius_client, slip_reader
 from parlaylab.nebius_client import NebiusError, choose, pick_model
 
-# What a Nebius account without Nemotron Omni might list.
+# What a Nebius account without Nemotron Omni (dedicated-only) might list.
 ACCOUNT = [
     "Qwen/Qwen2.5-VL-72B-Instruct",
     "meta-llama/Llama-3.3-70B-Instruct",
@@ -14,17 +14,33 @@ ACCOUNT = [
     "nvidia/Nemotron-3-Ultra-550b-a55b",
     "nvidia/nemotron-3-super-120b-a12b",
 ]
+WITH_CHEAP_VISION = ACCOUNT + ["google/gemma-3-27b-it", "nvidia/Cosmos3-Super-Reasoner"]
 
 
-def test_agent_prefers_nemotron_super():
+def test_cheap_mode_uses_nano_for_agents_and_super_for_engineer():
+    assert choose("agent", ACCOUNT, "cheap") == "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+    assert choose("builder", ACCOUNT, "cheap") == "nvidia/nemotron-3-super-120b-a12b"
+    # Omni is never picked as a text agent (it's dedicated-only on Nebius).
+    assert choose("agent", ["nvidia/Nemotron-3-Nano-Omni", "nvidia/nemotron-3-super-120b-a12b"], "cheap") \
+        == "nvidia/nemotron-3-super-120b-a12b"
+
+
+def test_best_mode_uses_super():
+    assert choose("agent", ACCOUNT, "best") == "nvidia/nemotron-3-super-120b-a12b"
+    assert choose("builder", ACCOUNT, "best") == "nvidia/nemotron-3-super-120b-a12b"
+
+
+def test_cheap_is_the_default(monkeypatch):
+    assert choose("agent", ACCOUNT) == "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+    monkeypatch.setenv("PARLAYLAB_MODE", "best")
     assert choose("agent", ACCOUNT) == "nvidia/nemotron-3-super-120b-a12b"
-    no_super = [m for m in ACCOUNT if "super" not in m]
-    assert choose("agent", no_super).startswith("nvidia/")
 
 
-def test_vision_prefers_nvidia_then_any():
-    assert choose("vision", ACCOUNT + ["nvidia/Nemotron-3-Nano-Omni"]) == "nvidia/Nemotron-3-Nano-Omni"
-    assert choose("vision", ACCOUNT) == "Qwen/Qwen2.5-VL-72B-Instruct"
+def test_vision_choice_by_mode():
+    assert choose("vision", ACCOUNT + ["nvidia/Nemotron-3-Nano-Omni"], "cheap") == "nvidia/Nemotron-3-Nano-Omni"
+    assert choose("vision", WITH_CHEAP_VISION, "cheap") == "nvidia/Cosmos3-Super-Reasoner"
+    assert choose("vision", WITH_CHEAP_VISION, "best") == "Qwen/Qwen2.5-VL-72B-Instruct"
+    assert choose("vision", ACCOUNT, "cheap") == "Qwen/Qwen2.5-VL-72B-Instruct"
     assert choose("vision", ["nvidia/nemotron-3-super-120b-a12b"]) is None
 
 
@@ -32,7 +48,7 @@ def test_override_is_case_insensitive_and_must_exist(monkeypatch):
     monkeypatch.setenv("NEBIUS_AGENT_MODEL", "NVIDIA/NEMOTRON-3-ULTRA-550B-A55B")
     assert choose("agent", ACCOUNT) == "nvidia/Nemotron-3-Ultra-550b-a55b"
     monkeypatch.setenv("NEBIUS_AGENT_MODEL", "nvidia/does-not-exist")
-    assert choose("agent", ACCOUNT) == "nvidia/nemotron-3-super-120b-a12b"
+    assert choose("agent", ACCOUNT, "best") == "nvidia/nemotron-3-super-120b-a12b"
 
 
 def test_no_vision_model_gives_clear_error(monkeypatch):
@@ -58,10 +74,10 @@ def test_screenshot_two_step_when_no_nvidia_vision(monkeypatch):
 
     monkeypatch.setattr(slip_reader, "chat", fake_chat)
     out = slip_reader.read_slip_image(b"png", "image/png", "key")
-    assert calls == ["Qwen/Qwen2.5-VL-72B-Instruct", "nvidia/nemotron-3-super-120b-a12b"]
+    assert calls == ["Qwen/Qwen2.5-VL-72B-Instruct", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"]
     assert out["legs"][0]["team"] == "New York Knicks"
     assert out["_models"] == {"vision": "Qwen/Qwen2.5-VL-72B-Instruct",
-                              "parser": "nvidia/nemotron-3-super-120b-a12b"}
+                              "parser": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"}
 
 
 def test_screenshot_one_step_with_nvidia_vision(monkeypatch):
@@ -89,7 +105,8 @@ def test_model_not_found_becomes_plain_message(monkeypatch):
         pass
 
     monkeypatch.setattr(nebius_client, "openai",
-                        SimpleNamespace(NotFoundError=NotFound, AuthenticationError=Other, RateLimitError=Other))
+                        SimpleNamespace(NotFoundError=NotFound, AuthenticationError=Other, RateLimitError=Other,
+                                        BadRequestError=Other))
 
     class FakeCompletions:
         def create(self, **kw):

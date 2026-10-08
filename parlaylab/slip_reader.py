@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 from datetime import date
 
-from .nebius_client import chat, extract_json, is_nvidia, pick_model
+from .nebius_client import chat, extract_json, pick_model
 from .learned import slip_rules
 from .stats_catalog import BET_TYPES, PROP_STATS, SPORTS, stats_for
 
@@ -101,12 +101,12 @@ def _image_part(image_bytes: bytes, mime: str) -> dict:
 def read_slip_image(image_bytes: bytes, mime: str = "image/png", api_key: str | None = None) -> dict:
     """Screenshot → legs.
 
-    With an NVIDIA vision model on your account, it reads the slip straight to JSON.
-    Otherwise the vision model you have copies the slip out as text, and Nemotron
-    turns that text into legs (so an NVIDIA model still does the understanding).
+    A Nemotron vision model reads the slip straight to JSON. Any other vision model
+    (e.g. NVIDIA Cosmos, Gemma) copies the slip out as text, and Nemotron turns that
+    text into legs, so an NVIDIA model always does the understanding.
     """
     vision = pick_model("vision", api_key)
-    if is_nvidia(vision):
+    if "nemotron" in vision.lower():  # Nemotron vision models read straight to JSON
         messages = [
             {"role": "system", "content": _instructions()},
             {"role": "user", "content": [{"type": "text", "text": "Read this bet slip and return the JSON."},
