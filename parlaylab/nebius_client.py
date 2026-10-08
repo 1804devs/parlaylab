@@ -172,33 +172,75 @@ def model_report(api_key: str | None = None) -> dict:
 
 # ---------------- chat ----------------
 
+NO_THINK = {"chat_template_kwargs": {"enable_thinking": False}}
+MAX_OUTPUT = 16000
+
+
+def _create(client, model: str, messages, max_tokens: int, temperature: float, think: bool):
+    """One API call. `think=False` asks Nemotron to skip its reasoning step."""
+    kwargs = dict(model=model, messages=messages, max_tokens=max_tokens, temperature=temperature)
+    no_think = not think and "nemotron" in model.lower()
+    try:
+        return client.chat.completions.create(**kwargs, **({"extra_body": NO_THINK} if no_think else {}))
+    except openai.BadRequestError as e:
+        err = str(e).lower()
+        if no_think and ("chat_template" in err or "enable_thinking" in err):
+            return client.chat.completions.create(**kwargs)  # endpoint ignores the switch: plain call
+        if max_tokens > 4000 and "token" in err:
+            # Small models can have a lower output cap; retry once within it.
+            return client.chat.completions.create(**{**kwargs, "max_tokens": 4000},
+                                                  **({"extra_body": NO_THINK} if no_think else {}))
+        raise
+
+
+def _answer(resp) -> tuple[str, str | None]:
+    """(answer text, finish_reason). Thinking that was cut off is not an answer."""
+    choice = resp.choices[0]
+    msg = choice.message
+    text = (msg.content or "").strip()
+    if not text and choice.finish_reason == "stop":
+        # Some reasoning endpoints put a finished answer only in reasoning_content.
+        extra = getattr(msg, "reasoning_content", None) or ""
+        if not extra and getattr(msg, "model_extra", None):
+            extra = msg.model_extra.get("reasoning_content") or ""
+        text = extra.strip()
+    return strip_thinking(text), choice.finish_reason
+
+
 def chat(
     messages: list[dict[str, Any]],
     model: str = "agent",
     api_key: str | None = None,
     max_tokens: int = 6000,
     temperature: float = 0.3,
+    think: bool = True,
 ) -> str:
     """Send a chat request and return the final answer text.
 
     `model` can be a role ("agent", "builder", "vision") or an exact model ID.
+    `think=False` skips Nemotron's reasoning step: faster and cheaper for simple
+    jobs like turning a slip into JSON.
+
+    If a reasoning model runs out of room before answering, this retries with
+    thinking off and more room, then (for the cheap "agent" role) hands the job
+    to the stronger "builder" model.
     """
-    if model in ROLES:
-        model = pick_model(model, api_key)
+    role = model if model in ROLES else None
+    if role:
+        model = pick_model(role, api_key)
     client = get_client(api_key)
     try:
-        try:
-            resp = client.chat.completions.create(
-                model=model, messages=messages, max_tokens=max_tokens, temperature=temperature,
-            )
-        except openai.BadRequestError as e:
-            # Small models can have a lower output cap; retry once within it.
-            if max_tokens > 4000 and "token" in str(e).lower():
-                resp = client.chat.completions.create(
-                    model=model, messages=messages, max_tokens=4000, temperature=temperature,
-                )
-            else:
-                raise
+        resp = _create(client, model, messages, max_tokens, temperature, think)
+        text, finish = _answer(resp)
+        if not text and finish == "length":
+            resp = _create(client, model, messages, MAX_OUTPUT, temperature, think=False)
+            text, finish = _answer(resp)
+        if not text and role == "agent":
+            stronger = pick_model("builder", api_key)
+            if stronger != model:
+                model = stronger
+                resp = _create(client, model, messages, MAX_OUTPUT, temperature, think=False)
+                text, finish = _answer(resp)
     except openai.NotFoundError as e:
         _MODELS_CACHE.clear()
         raise NebiusError(f"Nebius doesn't offer `{model}` on your account. Open 'Models' in the "
@@ -208,20 +250,10 @@ def chat(
     except openai.RateLimitError as e:
         raise NebiusError("Nebius says you're out of credits or sending too fast. "
                           "Check your balance, wait a minute, and try again.") from e
-    msg = resp.choices[0].message
-    text = (msg.content or "").strip()
     if not text:
-        # Some reasoning endpoints only fill reasoning_content.
-        extra = getattr(msg, "reasoning_content", None) or ""
-        if not extra and getattr(msg, "model_extra", None):
-            extra = msg.model_extra.get("reasoning_content") or ""
-        text = extra.strip()
-    if not text:
-        raise NebiusError(
-            f"{model} returned an empty answer (finish_reason="
-            f"{resp.choices[0].finish_reason}). Try again or raise max_tokens."
-        )
-    return strip_thinking(text)
+        raise NebiusError(f"{model} didn't return an answer (finish_reason={finish}). "
+                          "Try again, or switch Model cost to Best in the sidebar.")
+    return text
 
 
 def strip_thinking(text: str) -> str:

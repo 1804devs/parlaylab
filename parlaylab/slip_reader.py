@@ -112,7 +112,8 @@ def read_slip_image(image_bytes: bytes, mime: str = "image/png", api_key: str | 
             {"role": "user", "content": [{"type": "text", "text": "Read this bet slip and return the JSON."},
                                          _image_part(image_bytes, mime)]},
         ]
-        result = _normalize(extract_json(chat(messages, model=vision, api_key=api_key, temperature=0.0)))
+        result = _normalize(extract_json(chat(messages, model=vision, api_key=api_key, temperature=0.0,
+                                                 think=False)))
         result["_models"] = {"vision": vision, "parser": vision}
         return result
 
@@ -132,6 +133,9 @@ def read_slip_text(slip_text: str, api_key: str | None = None) -> dict:
         {"role": "system", "content": _instructions()},
         {"role": "user", "content": f"Bet slip text:\n\n{slip_text}"},
     ]
-    result = _normalize(extract_json(chat(messages, model=parser, api_key=api_key, temperature=0.0)))
+    # Turning text into JSON needs no step-by-step thinking: skip it (faster, cheaper, and
+    # small reasoning models otherwise spend their whole budget thinking).
+    result = _normalize(extract_json(chat(messages, model="agent", api_key=api_key,
+                                          temperature=0.0, max_tokens=4000, think=False)))
     result["_models"] = {"vision": None, "parser": parser}
     return result
