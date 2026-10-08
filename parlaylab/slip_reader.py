@@ -279,6 +279,16 @@ def fetch_google_image(url: str, get=_get) -> tuple[bytes, str]:
     return img
 
 
+def hardrock_betslip_ids(url: str) -> list[str] | None:
+    """IDs in a Hard Rock share link like share.hardrock.bet/...?deep_link_value=hardrock://betslip/1,2,3."""
+    if not _allowed(url):
+        return None
+    m = re.search(r"betslip(?:/|%2F)([\d,%2C]+)", url, flags=re.I)
+    if not m:
+        return None
+    return [x for x in re.split(r",|%2C", m.group(1), flags=re.I) if x]
+
+
 def read_shared(shared: str, api_key: str | None = None, book: str | None = "Hard Rock Bet",
                 fetch=fetch_share_page, fetch_image=fetch_google_image) -> dict:
     """Whatever the Share button gave you: text, a sportsbook link, or a Google Photos/Drive link."""
@@ -294,7 +304,18 @@ def read_shared(shared: str, api_key: str | None = None, book: str | None = "Har
         result["_shared_from"] = "google"
         return result
 
-    # 2) A sportsbook page.
+    # 2) A Hard Rock "share betslip" link only carries Hard Rock's internal bet IDs
+    #    (hardrock://betslip/<id>,<id>,...), and the page redirects to the app's home page.
+    #    The bets can't be read from it, so say so plainly instead of guessing.
+    for url in urls:
+        ids = hardrock_betslip_ids(url)
+        if ids is not None:
+            raise ShareError(f"This Hard Rock share link only carries {len(ids)} internal bet ID"
+                             f"{'' if len(ids) == 1 else 's'} ({len(ids)}-leg slip), not the teams, lines or odds, "
+                             "and Hard Rock's page just opens their app. Take a screenshot of the slip and upload "
+                             "it, or share the screenshot as a Google Photos link and paste that.")
+
+    # 3) A sportsbook page.
     page_text, opened, blocked = "", [], []
     for url in urls:
         if not _allowed(url):
@@ -309,7 +330,7 @@ def read_shared(shared: str, api_key: str | None = None, book: str | None = "Har
             break
         page_text = ""
 
-    # 3) Plain text (with or without a link).
+    # 4) Plain text (with or without a link).
     combined = "\n".join(x for x in (text_part, page_text) if x)
     if not combined or not _looks_like_bets(combined):
         if opened:

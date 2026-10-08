@@ -152,3 +152,14 @@ def test_read_shared_routes_google_links_to_the_screenshot_reader(monkeypatch):
     out = read_shared("https://photos.app.goo.gl/AbCdEf123", "key",
                       fetch_image=lambda url: (b"png", "image/png"))
     assert calls == [(b"png", "image/png", "Hard Rock Bet")] and out["_shared_from"] == "google"
+
+
+def test_hard_rock_betslip_link_is_explained_not_fetched(monkeypatch):
+    """The real link from Oct 8: 6 internal IDs, page redirects to app.hardrock.bet."""
+    link = ("https://share.hardrock.bet/Pt0T/bet?deep_link_value=hardrock://betslip/8970358421169766795,"
+            "6945898442006856072,8199649560927273359,7925772389953175966,7988546197432435104,4234558413507527090")
+    fetched = []
+    with pytest.raises(ShareError, match=r"6 internal bet IDs \(6-leg slip\)"):
+        read_shared(link, "key", fetch=lambda url: fetched.append(url) or "")
+    assert fetched == []
+    assert slip_reader.hardrock_betslip_ids("https://evil.example/betslip/1,2") is None
