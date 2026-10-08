@@ -20,6 +20,7 @@ from parlaylab.agents import leg_label, run_research_team  # noqa: E402
 from parlaylab.grader import grade_parlay  # noqa: E402
 from parlaylab.nebius_client import is_nvidia, model_report  # noqa: E402
 from parlaylab.odds import parlay_summary  # noqa: E402
+from parlaylab.enrich import enrich_slips, unmatched  # noqa: E402
 from parlaylab.slip_reader import LEG_FIELDS, ShareError, read_screenshots, read_shared  # noqa: E402
 from parlaylab.stats_catalog import BET_TYPES, SPORTS, all_stat_keys  # noqa: E402
 
@@ -133,8 +134,8 @@ NUMERIC_FIELDS = ("line", "odds")
 def _editor_frame(legs: list[dict]) -> pd.DataFrame:
     """Leg table with fixed column types. An all-empty column would otherwise be typed as
     numbers and crash the text/dropdown editors (e.g. a slip with no game dates)."""
-    df = pd.DataFrame(legs or [{}], columns=LEG_FIELDS)
-    for col in LEG_FIELDS:
+    df = pd.DataFrame(legs or [{}], columns=["game"] + LEG_FIELDS)
+    for col in ["game"] + LEG_FIELDS:
         if col in NUMERIC_FIELDS:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
         else:
@@ -181,30 +182,37 @@ with tab_add:
                                  accept_multiple_files=True,
                                  help="On your phone, tap here to pick slips straight from Photos.")
         if shots:
-            options = {"One slip per screenshot": "each", "My Bets list (many slips)": "many"}
-            if len(shots) > 1:
-                options = {"One slip per screenshot": "each", "One long slip in parts": "one",
-                           "My Bets list (many slips)": "many"}
-            mode = options[st.radio("What's in these screenshots?", list(options), horizontal=True,
-                                    help="A tall scrolling screenshot of My Bets works too: pick 'My Bets list'.")]
-            with st.expander(f"Preview ({len(shots)})", expanded=False):
+            with st.expander("Reading options", expanded=False):
+                choice = st.radio("What's in these screenshots?",
+                                  ["Find every bet (recommended)", "Each screenshot is one slip",
+                                   "All screenshots are one long slip"],
+                                  help="'Find every bet' works for single slips, several slips and My Bets lists.")
+                mode = {"Find every bet (recommended)": "many", "Each screenshot is one slip": "each",
+                        "All screenshots are one long slip": "one"}[choice]
+                reread = st.button("Read again with this option")
                 for s in shots:
                     st.image(s, width="stretch")
-            label = {"each": "Read slip" if len(shots) == 1 else f"Read {len(shots)} slips",
-                     "one": "Read as one slip", "many": "Read all slips on the list"}[mode]
-            if st.button(label, type="primary", width="stretch"):
+            signature = (tuple(s.file_id for s in shots), mode)
+            # Read automatically as soon as screenshots are added (or when asked to read again).
+            if reread or st.session_state.get("read_signature", (None,))[0] != signature[0]:
+                st.session_state.read_signature = signature
                 started = time.time()
-                with st.spinner(f"Reading {len(shots)} screenshot(s) in parallel..."):
+                with st.status(f"Reading {len(shots)} screenshot(s)...", expanded=True) as box:
                     slips, errors = read_screenshots([(s.getvalue(), s.type or "image/png") for s in shots],
                                                      mode, api_key, book=book_hint)
+                    if slips:
+                        box.write("Matching each leg to its game...")
+                        enrich_slips(slips)
+                    box.update(label=f"Done in {time.time() - started:.0f}s", state="complete")
                 for err in errors:
                     db.log_event("error", {"where": "slip_reader.image", "message": err})
                     st.error(f"Couldn't read {err}")
                 if slips:
                     _queue_drafts([_ai_draft(d, "screenshot") for d in slips])
                     legs = sum(len(s["legs"]) for s in slips)
-                    st.success(f"Found {len(slips)} slip(s), {legs} legs, in {time.time() - started:.0f}s. "
-                               "Check them on the right.")
+                    missing = sum(unmatched(s) for s in slips)
+                    st.success(f"Found {len(slips)} slip(s), {legs} legs. Check them on the right."
+                               + (f" {missing} leg(s) need a look: no game found." if missing else ""))
                     _show_models(slips[0])
                 elif not errors:
                     st.warning("No bets found in those screenshots.")
@@ -222,6 +230,7 @@ with tab_add:
                         slips = read_shared(shared, api_key, book=book_hint)
                         settled = [s for s in slips if s.get("status") in ("won", "lost", "void", "cashed_out")]
                         keep = slips if include_settled else [s for s in slips if s not in settled]
+                        enrich_slips(keep)
                         _queue_drafts([_ai_draft(s, "share_" + s.get("_shared_from", "text")) for s in keep])
                         legs = sum(len(s["legs"]) for s in keep)
                         msg = (f"Found {len(slips)} slip(s). Added {len(keep)} to check ({legs} legs); "
@@ -256,6 +265,9 @@ with tab_add:
                 width="stretch",
                 key=f"leg_editor_{did}",
                 column_config={
+                    "game": st.column_config.TextColumn("Game (auto)", disabled=True, width="medium",
+                                                        help="Matched from the ESPN schedule. Fix the team or date "
+                                                             "if it says no game found, then click Re-check games."),
                     "sport": st.column_config.SelectboxColumn(options=SPORTS, required=True),
                     "type": st.column_config.SelectboxColumn(options=BET_TYPES, required=True),
                     "stat": st.column_config.SelectboxColumn(options=all_stat_keys()),
@@ -284,6 +296,14 @@ with tab_add:
                     f"<span class='pl-chip'>Book's implied chance {m['implied_prob']:.1%}</span>",
                     unsafe_allow_html=True,
                 )
+            if any(str(l.get("game", "")).startswith("❓") for l in legs):
+                st.warning("Some legs have no game matched. Fix the team, sport or date, then click Re-check games.")
+            if st.button("🔄 Re-check games", key=f"recheck_{did}"):
+                fixed = enrich_slips([{"legs": [{k: v for k, v in l.items() if k != "game"} for l in legs]}])[0]
+                draft["legs"] = fixed["legs"]
+                st.session_state.draft_seq = st.session_state.get("draft_seq", 0) + 1
+                draft["_id"] = st.session_state.draft_seq      # fresh editor showing the new matches
+                st.rerun()
             s1, s2 = st.columns([2, 1])
             if s1.button("Save & start tracking", type="primary", disabled=not legs, key=f"save_{did}"):
                 pid = db.add_parlay(legs, stake, book or None, total_odds or None)

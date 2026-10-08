@@ -152,3 +152,13 @@ def test_extract_json():
     assert extract_json('<think>hmm {"a":0}</think>Here: ```json\n{"legs": []}\n```') == {"legs": []}
     assert extract_json('Sure! {"x": 1} done') == {"x": 1}
     assert strip_thinking("reasoning...</think>answer") == "answer"
+
+
+def test_sportsbook_three_letter_codes_match_espn_codes():
+    gsw = {"displayName": "Golden State Warriors", "name": "Warriors", "abbreviation": "GS"}
+    utah = {"displayName": "Utah Jazz", "name": "Jazz", "abbreviation": "UTAH"}
+    giants = {"displayName": "New York Giants", "name": "Giants", "abbreviation": "NYG"}
+    assert team_matches("NYK", KNICKS) and team_matches("GSW", gsw) and team_matches("UTA", utah)
+    assert not team_matches("NYG", KNICKS)          # Giants code doesn't match the Knicks
+    assert not team_matches("NYK", giants)
+    assert not team_matches("NYX", KNICKS)

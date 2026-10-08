@@ -56,6 +56,13 @@ def team_matches(query: str | None, team: dict) -> bool:
     abbr = norm(team.get("abbreviation"))
     if q == abbr:
         return True
+    nick0 = norm(team.get("name"))[:1]
+    # Sportsbook 3-letter codes vs ESPN's 2-letter ones: "NYK" = "NY" + Knicks, "GSW" = "GS" + Warriors.
+    if abbr and len(q) == 3 and len(abbr) == 2 and q.startswith(abbr) and q[2] == nick0:
+        return True
+    # ...and the other way round: "UTA" for ESPN's "UTAH".
+    if abbr and len(q) >= 3 and " " not in q and len(abbr) > len(q) and abbr.startswith(q):
+        return True
     full = names[0]
     if q == full or (full and full in q):
         return True

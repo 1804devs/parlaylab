@@ -8,7 +8,7 @@ Built for the **Nebius × NVIDIA Global AI Hackathon 2026** (submissions close O
 
 | Step | What happens | Powered by |
 |---|---|---|
-| 1. Read the slip | Pick your sportsbook (Hard Rock Bet by default), then upload one or several screenshots (straight from your phone's Photos), or paste text: a whole **My Bets** page (cheapest: every slip read in one call), one slip, or a Google Photos/Drive link to a screenshot. Hard Rock's own share links only hold internal IDs, so the app asks for a screenshot or text instead. Screenshots are shrunk, tall ones cut into overlapping pieces, and read in parallel (4 at a time); pick **One slip per screenshot**, **One long slip in parts**, or **My Bets list (many slips)**. Slips are then checked one at a time. The legs come back as an editable table so you can fix anything before saving | the best vision model on your Nebius account + **NVIDIA Nemotron 3 Super** to turn it into legs |
+| 1. Read the slip | Pick your sportsbook (Hard Rock Bet by default), then upload one or several screenshots (straight from your phone's Photos), or paste text: a whole **My Bets** page (cheapest: every slip read in one call), one slip, or a Google Photos/Drive link to a screenshot. Hard Rock's own share links only hold internal IDs, so the app asks for a screenshot or text instead. Screenshots are shrunk, tall ones cut into overlapping pieces, and read in parallel (4 at a time); pick **One slip per screenshot**, **One long slip in parts**, or **My Bets list (many slips)**. Reading starts as soon as screenshots are added, and every leg is matched to its real game from the ESPN schedule (opponent, date and time filled in; unmatched legs flagged, with a **Re-check games** button). Slips are then checked one at a time. The legs come back as an editable table so you can fix anything before saving | the best vision model on your Nebius account + **NVIDIA Nemotron 3 Super** to turn it into legs |
 | 2. Track it live | Moneylines, spreads, totals and player props are graded against live scores and box scores for NFL, NBA, MLB and NHL. Legs show winning/losing as games play, overs cash early, unders die early, and you get a pop-up when a leg settles or you're one leg away | ESPN public score feeds |
 | 3. Research team | Odds Analyst, Scout and Stats Analyst work in parallel; a Devil's Advocate attacks their notes; a Lead Analyst writes a scorecard with a verdict, per-leg confidence, the weakest leg and a suggestion | **NVIDIA Nemotron 3 Super** on Nebius Token Factory (+ optional Tavily web search) |
 | 4. R&D Lab | An R&D team of agents that improves the app itself, based on how it's actually being used (see below) | **NVIDIA Nemotron 3 Super** on Nebius Token Factory |
@@ -102,6 +102,7 @@ parlaylab/
   rnd.py                   the R&D team: agents, sandbox tests, apply/undo
   rnd_report.py            the R&D team's honest report (facts from records, not models)
   learned.py               rules the R&D team teaches the app (learned.json)
+  enrich.py                matches each leg to its real game right after reading
   odds.py                  American odds, payout, implied probability
   db.py                    SQLite storage
 tests/test_core.py
