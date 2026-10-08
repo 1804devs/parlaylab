@@ -207,6 +207,138 @@ def _with_book(result: dict, book: str | None) -> dict:
     return result
 
 
+# ---------------- fast screenshot reading ----------------
+# 1) shrink + compress each screenshot (faster upload, fewer image tokens)
+# 2) cut tall/scrolling screenshots into overlapping tiles so small text stays readable
+# 3) copy every tile out as text IN PARALLEL with the vision model
+# 4) turn the text into legs with as few Nemotron calls as possible
+
+MAX_WIDTH = 1080          # phone screenshots are often 1170-1440 px wide
+TILE_RATIO = 1.9          # tile height = 1.9 x width (about one phone screen)
+TILE_OVERLAP = 0.12       # 12% overlap so a leg cut at an edge appears whole in one tile
+WORKERS = 4
+
+
+def prepare_image(image_bytes: bytes, mime: str = "image/png") -> list[tuple[bytes, str]]:
+    """Shrink, compress and (if tall) tile a screenshot. Returns JPEG tiles in top-to-bottom order."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        img.load()
+    except Exception:
+        return [(image_bytes, mime)]  # not something Pillow understands: send as-is
+    img = img.convert("RGB")
+    if img.width > MAX_WIDTH:
+        img = img.resize((MAX_WIDTH, round(img.height * MAX_WIDTH / img.width)))
+    tile_h = round(img.width * TILE_RATIO)
+    if img.height <= tile_h * 1.15:
+        boxes = [(0, 0, img.width, img.height)]
+    else:
+        step = round(tile_h * (1 - TILE_OVERLAP))
+        tops = list(range(0, max(img.height - tile_h, 0) + 1, step))
+        if tops[-1] + tile_h < img.height:
+            tops.append(img.height - tile_h)
+        boxes = [(0, y, img.width, y + tile_h) for y in tops]
+    tiles = []
+    for box in boxes:
+        buf = BytesIO()
+        img.crop(box).save(buf, format="JPEG", quality=85, optimize=True)
+        tiles.append((buf.getvalue(), "image/jpeg"))
+    return tiles
+
+
+def transcribe_image(image_bytes: bytes, mime: str, api_key: str | None = None, book: str | None = None) -> str:
+    """Copy one screenshot (or tile) out as plain text with the vision model."""
+    return chat(
+        [{"role": "user", "content": [{"type": "text", "text": TRANSCRIBE_PROMPT + _book_hint(book)},
+                                      _image_part(image_bytes, mime)]}],
+        model="vision", api_key=api_key, temperature=0.0, max_tokens=2000, think=False,
+    )
+
+
+MODES = ("each", "one", "many")   # one slip per screenshot · one long slip in parts · My Bets list
+
+
+def _slip_signature(slip: dict) -> tuple:
+    return tuple(sorted(_leg_key(l) for l in slip.get("legs") or []))
+
+
+def read_screenshots(files: list[tuple[bytes, str]], mode: str = "each", api_key: str | None = None,
+                     book: str | None = None, workers: int = WORKERS,
+                     transcribe=None) -> tuple[list[dict], list[str]]:
+    """Read many screenshots fast. Returns (slips, errors).
+
+    mode "each": every screenshot is its own slip (one Nemotron call each, in parallel)
+    mode "one":  all screenshots are parts of ONE slip (one Nemotron call total)
+    mode "many": a My Bets list with many slips (one Nemotron call per ~6,000 characters)
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    transcribe = transcribe or (lambda b, m: transcribe_image(b, m, api_key, book))
+    jobs = [(i, tile) for i, (b, m) in enumerate(files) for tile in prepare_image(b, m)]
+    errors: list[str] = []
+
+    def run(job):
+        i, (b, m) = job
+        try:
+            return i, transcribe(b, m)
+        except Exception as e:  # one bad screenshot shouldn't sink the rest
+            return i, e
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(run, jobs))          # map keeps the original order
+    per_file: dict[int, list[str]] = {}
+    failed: set[int] = set()
+    for i, out in results:
+        if isinstance(out, Exception):
+            failed.add(i)
+            errors.append(f"Screenshot {i + 1}: {out}")
+        else:
+            per_file.setdefault(i, []).append(out)
+    texts = {i: "\n".join(parts) for i, parts in per_file.items() if i not in failed}
+    if not texts:
+        return [], errors
+
+    vision = None
+    try:
+        vision = pick_model("vision", api_key)
+    except Exception:
+        pass
+    slips: list[dict] = []
+    if mode == "one":
+        joined = "\n".join(texts[i] for i in sorted(texts))
+        slip = read_slip_text(joined, api_key, book=book)
+        slip["_transcript"] = joined
+        slips = [slip]
+    elif mode == "many":
+        joined = "\n\n".join(f"=== Screenshot part {i + 1} ===\n{texts[i]}" for i in sorted(texts))
+        seen = set()
+        for slip in read_slips_text(joined, api_key, book=book):
+            sig = _slip_signature(slip)
+            if sig not in seen:                       # overlapping screenshots repeat slips
+                seen.add(sig)
+                slips.append(slip)
+    else:
+        def parse(i):
+            try:
+                s = read_slip_text(texts[i], api_key, book=book)
+                s["_transcript"] = texts[i]
+                return s
+            except Exception as e:
+                errors.append(f"Screenshot {i + 1}: {e}")
+                return None
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            slips = [s for s in pool.map(parse, sorted(texts)) if s]
+    for s in slips:
+        s["_models"] = {"vision": vision, "parser": (s.get("_models") or {}).get("parser")}
+    return slips, errors
+
+
 # ---------------- several screenshots of one slip ----------------
 
 def _leg_key(leg: dict) -> tuple:

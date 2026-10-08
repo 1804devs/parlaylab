@@ -5,6 +5,7 @@ Run:  streamlit run app.py
 from __future__ import annotations
 
 import os
+import time
 
 import pandas as pd
 import streamlit as st
@@ -19,8 +20,7 @@ from parlaylab.agents import leg_label, run_research_team  # noqa: E402
 from parlaylab.grader import grade_parlay  # noqa: E402
 from parlaylab.nebius_client import is_nvidia, model_report  # noqa: E402
 from parlaylab.odds import parlay_summary  # noqa: E402
-from parlaylab.slip_reader import (LEG_FIELDS, ShareError, merge_slips, read_shared,  # noqa: E402
-                                   read_slip_image)
+from parlaylab.slip_reader import LEG_FIELDS, ShareError, read_screenshots, read_shared  # noqa: E402
 from parlaylab.stats_catalog import BET_TYPES, SPORTS, all_stat_keys  # noqa: E402
 
 st.set_page_config(page_title="ParlayLab", page_icon="🎟️", layout="wide")
@@ -181,30 +181,33 @@ with tab_add:
                                  accept_multiple_files=True,
                                  help="On your phone, tap here to pick slips straight from Photos.")
         if shots:
-            one_slip = False
+            options = {"One slip per screenshot": "each", "My Bets list (many slips)": "many"}
             if len(shots) > 1:
-                one_slip = st.radio("These screenshots are…", ["Separate slips", "One long slip in parts"],
-                                    horizontal=True) == "One long slip in parts"
-            with st.expander(f"Preview ({len(shots)})", expanded=len(shots) == 1):
+                options = {"One slip per screenshot": "each", "One long slip in parts": "one",
+                           "My Bets list (many slips)": "many"}
+            mode = options[st.radio("What's in these screenshots?", list(options), horizontal=True,
+                                    help="A tall scrolling screenshot of My Bets works too: pick 'My Bets list'.")]
+            with st.expander(f"Preview ({len(shots)})", expanded=False):
                 for s in shots:
                     st.image(s, width="stretch")
-            label = "Read slip" if len(shots) == 1 else ("Read as one slip" if one_slip else f"Read {len(shots)} slips")
+            label = {"each": "Read slip" if len(shots) == 1 else f"Read {len(shots)} slips",
+                     "one": "Read as one slip", "many": "Read all slips on the list"}[mode]
             if st.button(label, type="primary", width="stretch"):
-                results, failed = [], []
-                with st.spinner("Reading..."):
-                    for s in shots:
-                        try:
-                            results.append(read_slip_image(s.getvalue(), s.type or "image/png", api_key, book=book_hint))
-                        except Exception as e:
-                            failed.append(s.name)
-                            db.log_event("error", {"where": "slip_reader.image", "message": str(e)})
-                            st.error(f"Couldn't read {s.name}: {e}")
-                if results:
-                    drafts = [merge_slips(results)] if one_slip else results
-                    _queue_drafts([_ai_draft(d, "screenshot") for d in drafts])
-                    st.success(f"Read {len(results)} screenshot(s)" + (f", {len(failed)} failed" if failed else "")
-                               + ". Check the legs on the right.")
-                    _show_models(results[0])
+                started = time.time()
+                with st.spinner(f"Reading {len(shots)} screenshot(s) in parallel..."):
+                    slips, errors = read_screenshots([(s.getvalue(), s.type or "image/png") for s in shots],
+                                                     mode, api_key, book=book_hint)
+                for err in errors:
+                    db.log_event("error", {"where": "slip_reader.image", "message": err})
+                    st.error(f"Couldn't read {err}")
+                if slips:
+                    _queue_drafts([_ai_draft(d, "screenshot") for d in slips])
+                    legs = sum(len(s["legs"]) for s in slips)
+                    st.success(f"Found {len(slips)} slip(s), {legs} legs, in {time.time() - started:.0f}s. "
+                               "Check them on the right.")
+                    _show_models(slips[0])
+                elif not errors:
+                    st.warning("No bets found in those screenshots.")
 
         with st.expander("📋 Paste your bets (cheapest)", expanded=True):
             st.caption("**Fastest + cheapest:** on app.hardrock.bet open **My Bets**, select all, copy, and paste "
